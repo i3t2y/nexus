@@ -71,13 +71,14 @@ nexus/
 
 | 文件 | 导出 | 作用 |
 |------|------|------|
-| `libs/storage/storage.py` | `r2_client()`, `save_checkpoint()`, `load_checkpoint()`, `presigned_get()`, `supabase_client()`, `save_state()`, `load_state()`, `log_task()`, `remember()`, `recall()`, `dumps()` | R2(S3兼容 boto3) + Supabase(create_client) 惰性初始化，凭证全从环境变量读 |
+| `libs/storage/storage.py` | `r2_client()`, `save_checkpoint()`, `load_checkpoint()`, `presigned_get()`, `supabase_client()`, `save_state()`, `load_state()`, `log_task(thread_id, space_name, action, status, request_id=None)`, `enqueue_task`, `claim_task`, `complete_task`, `load_task`, `remember()`, `recall()`, `dumps()` | R2(S3兼容 boto3) + Supabase(create_client) 惰性初始化，凭证全从环境变量读；异步任务队列带幂等键 |
 | `libs/storage/__init__.py` | re-export 上列 | Space 内 `from storage import ...` |
-| `libs/shared/gateway.py` | `call_space(space, path, payload)`, `ping(space)` | 调下游 Space：优先 Worker 网关，404/超时回退直调 hf.space。超时 90s(含冷启动) / 网关 60s |
-| `libs/shared/checkpointer.py` | `build_checkpointer()`, `db_uri()` | LangGraph `AsyncPostgresSaver.from_conn_string()` 上下文管理器，调方负责 `.setup()` |
-| `libs/shared/__init__.py` | — | 包标记 |
+| `libs/shared/gateway.py` | `call_space(space, path, payload, request_id=None)`, `ping(space)` | 调下游 Space：优先 Worker 网关，404/超时回退直调 hf.space。超时 90s(含冷启动) / 网关 60s。`request_id` 透传 `X-Request-ID` 串联全链路。**导入用 `from shared.gateway import`（在 `shared/` 子包内）** |
+| `libs/shared/checkpointer.py` | `build_checkpointer()`, `db_uri()` | LangGraph `AsyncPostgresSaver.from_conn_string()` 上下文管理器，调方负责 `.setup()`；`db_uri()` 自动补 `sslmode=require` |
+| `libs/shared/errors.py` | `new_request_id(inbound)`, `error_response(code,msg,status,rid,retryable=None)`, `raise_nexus_error(...)`, `log_event(rid,space,action,status,**extra)` | 统一错误体 `{error:{code,message,retryable,request_id}}` + 结构化 JSON 日志（stdout）。`retryable` 按 code 推断（downstream_*/db_unavailable/rate_limited = 可重试） |
+| `libs/shared/__init__.py` | re-export `call_space`, `ping`, `new_request_id`, `error_response`, `raise_nexus_error`, `log_event` | 包标记 + 便捷统一导入 |
 
-> **关键约束**：根 `libs/` 是唯一真源。改完根 libs 后、`git push` 前**必须**跑 `bash scripts/sync-spaces.sh`，否则各 Space build 出来跑的是旧库。各 Space 的 `libs/` 是同步产物（可提交，HF 直接读 repo 无构建后同步步骤）。
+> **关键约束**：根 `libs/` 是唯一真源。改完根 libs 后、`git push` 前**必须**跑 `bash scripts/sync-spaces.sh`（或先 `--check` 自检），否则各 Space build 出来跑的是旧库。CI 闸门 `.github/workflows/sync-check.yml` 在触动 libs 时跑 `--check` + py_compile + tsc 兜底。各 Space 的 `libs/` 是同步产物（可提交，HF 直接读 repo 无构建后同步步骤）。
 
 ### 2.3 四个 Space
 
@@ -100,7 +101,8 @@ spaces/hermes/
 ├── app/main.py     # 业务代码
 ├── libs/           # 由 sync-spaces.sh 复制(构建时已就位)
 └── scripts/        # 仅 hermes
-    ├── persist_to_r2.py     # Supabase→R2 双写快照(原子覆盖)
+    ├── persist_to_r2.py     # Supabase→R2 双写快照(原子覆盖 + sha256 + manifest)
+    ├── restore_from_r2.py   # R2→Supabase 反向恢复(--table/--all/--list，sha256 校验门)
     ├── replay_packages.py  # 重启重装历史 pip 包
     └── keepalive.py         # 下游 Space 保活探测
 ```
@@ -175,7 +177,7 @@ call_space 逻辑（`libs/shared/gateway.py`）：有 `GATEWAY_URL` 先经 Worke
 |------|-----|------|
 | nexus-checkpoints | `R2_CHECKPOINT_BUCKET` | LangGraph blob(`save_checkpoint`) |
 | nexus-artifacts | `R2_ARTIFACTS_BUCKET` | hermes Dashboard 文件管理 + 大产物 |
-| nexus-backups | `R2_BACKUP_BUCKET` | Supabase→R2 快照(`persist_to_r2.py`) |
+| nexus-backups | `R2_BACKUP_BUCKET` | Supabase→R2 快照(`persist_to_r2.py` + `_manifest.json`；`restore_from_r2.py` 反向恢复) |
 | nexus-skills | (代码未写env,表skills_index引用) | Skills 备份 |
 | nexus-vectors | (向量文件) | 向量 |
 
@@ -186,11 +188,11 @@ call_space 逻辑（`libs/shared/gateway.py`）：有 `GATEWAY_URL` 先经 Worke
 | 表 | 主键 | 用途 | 写入方 |
 |----|------|------|--------|
 | `agent_states` | thread_id(jsonb state) | Agent 状态 | `save_state`/`load_state` |
-| `task_logs` | bigserial | 任务日志(thread_id,space_name,action,status) | `log_task` |
+| `task_logs` | bigserial | 任务日志(thread_id,space_name,action,status,request_id) | `log_task` |
 | `long_memory` | key(jsonb value) | 长期记忆 | `remember`/`recall` |
 | `task_queue` | thread_id(idempotency_key UNIQUE) | 异步任务队列(queued/claimed/done/error) | `enqueue_task`/`claim_task`/`complete_task` |
 | `skills_index` | skill_name | Skill 元数据(内容存R2 nexus-skills) | (未来) |
-| `backup_snapshots` | bigserial | Supabase→R2 快照登记(table_name,r2_key,row_count) | `persist_to_r2.py` |
+| `backup_snapshots` | bigserial | Supabase→R2 快照登记(table_name,r2_key,row_count,sha256,r2_size) | `persist_to_r2.py`（登记）/`restore_from_r2.py`（校验源） |
 | `space_health` | bigserial | 保活探测留痕(space,status,detail) | `keepalive.py` |
 
 全部表 enable RLS，服务端用 `service_role` 绕过。`01_pgvector.sql` 加 `vector` 扩展 + `memory_vectors` 表 + HNSW 索引（向量搜索用，不需要可跳过）。
@@ -261,8 +263,9 @@ python -c "import secrets;print(secrets.token_urlsafe(32))"
 | Supabase 自身保活 | 查证补充 | `keepalive.py` 每轮往 `space_health` insert 一行 = 周期轻量写 DB，刷新"上次活动"防免费档**1 周不活跃自动暂停**（暂停只停 compute 不删数据，可恢复） | 同上 |
 | Ephemeral Package Replay | HuggingMes | 重启重装历史 pip 包 | `spaces/hermes/scripts/replay_packages.py`、`start.sh` |
 | 自愈 Gateway | HuggingMes | `start.sh` while 循环重启崩溃 app（5s 重启） | `spaces/hermes/start.sh` |
-| 原子备份/恢复 | HermesFace | R2 写 tmp→copy 原子替换(替代HF Dataset原子写),登记 backup_snapshots | `spaces/hermes/scripts/persist_to_r2.py` |
-| Supabase→R2 双写同步 | 两者 | 周期快照 Supabase 表写 R2(默认5分钟) | 同上 |
+| 原子备份/恢复 | HermesFace | R2 写 tmp→copy 原子替换(替代HF Dataset原子写),算 sha256+size 登记 backup_snapshots 并写 R2 `_manifest.json` | `spaces/hermes/scripts/persist_to_r2.py` |
+| R2→Supabase 反向恢复 | HermesFace | 读 R2 快照 → 复算 sha256 校验 → upsert 回 Supabase（幂等；`--table/--all/--list/--verify-only`） | `spaces/hermes/scripts/restore_from_r2.py` |
+| Supabase→R2 双写同步 | 两者 | 周期快照 Supabase 表写 R2(默认5分钟) | `persist_to_r2.py` |
 | Dashboard 文件管理 | 两者 | Gradio Tab:R2 上传/读入/编辑/保存/删除/刷新 | `spaces/hermes/app/main.py` |
 
 ### hermes `start.sh` 启动流程
@@ -406,7 +409,7 @@ langgraph `node_*` 是桩返回。真实接入在 `node_understand`/`node_plan`/
 ### 回滚
 - Space 出错：Settings→Restart；代码回滚 `git push -f` 到上个 commit
 - 表结构变更：先备份 → 改 SQL → 跑 `02_*.sql` 增量脚本
-- Supabase→R2 备份恢复：查 `backup_snapshots` 表按 `table_name+created_at` 找 `r2_key`，R2 拉快照 JSON 重建
+- Supabase 数据丢失：跑 `python spaces/hermes/scripts/restore_from_r2.py --list` 看 R2 快照 → `--table <t> --verify-only` 校 sha256 → `--table <t>`（或 `--all`）upsert 回 Supabase（见 [DEPLOYMENT 步骤 2.6](./DEPLOYMENT.md)）。校验门：复算 sha256 比对 `backup_snapshots.sha256` 字段，不符拒绝写回。
 
 ---
 

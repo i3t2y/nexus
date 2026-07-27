@@ -16,33 +16,38 @@ import os
 from typing import Any
 
 import gradio as gr
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header
 from pydantic import BaseModel
 
 # 共享库（构建前已同步到本 Space 目录 libs/）
 from storage import load_state, log_task, save_state
 from storage import enqueue_task, claim_task, complete_task, load_task
 from storage import r2_client
-from gateway import call_space
+from shared.gateway import call_space
+from shared.errors import new_request_id, raise_nexus_error, log_event
 
 # ── FastAPI 路由层 ──────────────────────────────────────────────────
 api = FastAPI(title="Hermes")
 _API_KEY = os.getenv("NEXUS_API_KEY", "")
+_SPACE = "hermes"
 
 
-def auth(authorization: str | None) -> None:
+def auth(authorization: str | None, request_id: str) -> None:
     """统一鉴权，fail-closed。
 
     生产：NEXUS_API_KEY 必填，缺失或不对 → 拒绝（缺 key 是配置错误，而非放行理由）。
     本地开发想免鉴权：设 NEXUS_AUTH_MODE=dev（明确开关，不靠“忘配 key”侥幸放行）。
     /health 不经本函数（保活探测需放行）。
+    失败统一走 raise_nexus_error，带 request_id 便于客户端串联排障。
     """
     if os.getenv("NEXUS_AUTH_MODE") == "dev":
         return
     if not _API_KEY:
-        raise HTTPException(500, "NEXUS_API_KEY 未配置（生产必填；本地免鉴权设 NEXUS_AUTH_MODE=dev）")
+        log_event(request_id, _SPACE, "auth", "error", reason="NEXUS_API_KEY 未配置")
+        raise_nexus_error("config_error", "NEXUS_API_KEY 未配置（生产必填；本地免鉴权设 NEXUS_AUTH_MODE=dev）", 500, request_id)
     if authorization != f"Bearer {_API_KEY}":
-        raise HTTPException(401, "unauthorized")
+        log_event(request_id, _SPACE, "auth", "error", reason="bad credential")
+        raise_nexus_error("unauthorized", "鉴权失败", 401, request_id)
 
 
 @api.get("/health")
@@ -51,71 +56,103 @@ async def health() -> dict[str, str]:
 
 
 @api.get("/state/{thread_id}")
-async def get_state(thread_id: str, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None)) -> dict[str, Any]:
+async def get_state(
+    thread_id: str,
+    x_nexus_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    x_request_id: str | None = Header(None, alias="X-Request-ID"),
+) -> dict[str, Any]:
     """查任务/Agent 状态（agent_states 表）。无记录返 404。"""
-    auth(x_nexus_key or authorization)
+    rid = new_request_id(x_request_id)
+    auth(x_nexus_key or authorization, rid)
     state = load_state(thread_id)
     if state is None:
-        raise HTTPException(404, f"thread {thread_id} 无状态记录")
-    return {"thread_id": thread_id, "state": state}
+        log_event(rid, _SPACE, "get_state", "not_found", thread_id=thread_id)
+        raise_nexus_error("not_found", f"thread {thread_id} 无状态记录", 404, rid)
+    return {"thread_id": thread_id, "state": state, "request_id": rid}
 
 
 # ── 异步任务队列（task_queue，带幂等键）───────────────────────────
 @api.post("/enqueue")
-async def enqueue(body: RunBody, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None), idempotency_key: str | None = Header(None, alias="Idempotency-Key")) -> dict[str, Any]:
+async def enqueue(
+    body: RunBody,
+    x_nexus_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    x_request_id: str | None = Header(None, alias="X-Request-ID"),
+) -> dict[str, Any]:
     """入队任务（异步模式）。带 `Idempotency-Key` header 实现幂等：同键重复命中已有，不重复执行。
 
     路由决策同 /run；区别是不立即调下游，写 task_queue(queued)，由 /dequeue 消费。
     """
-    auth(x_nexus_key or authorization)
+    rid = new_request_id(x_request_id)
+    auth(x_nexus_key or authorization, rid)
     import uuid
 
     thread_id = str(uuid.uuid4())
     space = route(body.prompt, body.force_space)
     created = enqueue_task(thread_id, space, {"prompt": body.prompt}, idempotency_key)
-    log_task(thread_id, "hermes", f"enqueue→{space}", "queued")
+    log_task(thread_id, "hermes", f"enqueue→{space}", "queued", rid)
     save_state(thread_id, {"prompt": body.prompt, "space": space, "phase": "queued"})
+    log_event(rid, _SPACE, "enqueue", "queued", thread_id=thread_id, target=space)
     # 幂等命中：返回已入队信息（不暴露既有 thread_id 避免越权；调用方靠 idempotency_key 查状态）
     if not created and idempotency_key:
-        return {"enqueued": False, "idempotency_key": idempotency_key, "space": space, "hint": "已有同键任务，用 Idempotency-Key + GET /task 查状态"}
-    return {"enqueued": True, "task_id": thread_id, "space": space}
+        return {"enqueued": False, "idempotency_key": idempotency_key, "space": space, "hint": "已有同键任务，用 Idempotency-Key + GET /task 查状态", "request_id": rid}
+    return {"enqueued": True, "task_id": thread_id, "space": space, "request_id": rid}
 
 
 @api.post("/dequeue")
-async def dequeue(x_nexus_key: str | None = Header(None), authorization: str | None = Header(None), space: str | None = None) -> dict[str, Any]:
+async def dequeue(
+    x_nexus_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    space: str | None = None,
+    x_request_id: str | None = Header(None, alias="X-Request-ID"),
+) -> dict[str, Any]:
     """认领一条 queued 任务 → 调下游 → 完成。单消费者模板实现。
 
     `space` query 可限某 lane。无任务返 `{"idle": True}`。
     """
-    auth(x_nexus_key or authorization)
+    rid = new_request_id(x_request_id)
+    auth(x_nexus_key or authorization, rid)
     job = claim_task(space)
     if job is None:
-        return {"idle": True}
+        return {"idle": True, "request_id": rid}
     tid = job["thread_id"]
     target_space = job["space"]
     prompt = (job.get("payload") or {}).get("prompt", "")
-    log_task(tid, "hermes", f"dequeue→{target_space}", "claimed")
+    log_task(tid, "hermes", f"dequeue→{target_space}", "claimed", rid)
+    log_event(rid, _SPACE, "dequeue", "claimed", thread_id=tid, target=target_space)
     try:
-        result = await call_space(target_space, _target_path(target_space), {"thread_id": tid, "prompt": prompt})
+        # 透传 request_id 给下游 Space，全链路同 rid 串联
+        result = await call_space(target_space, _target_path(target_space), {"thread_id": tid, "prompt": prompt}, request_id=rid)
         complete_task(tid, {"result": result}, status="done")
         save_state(tid, {"phase": "done", "downstream": target_space, "result": result})
-        log_task(tid, target_space, "invoke", "done")
-        return {"task_id": tid, "space": target_space, "status": "done", "result": result}
+        log_task(tid, target_space, "invoke", "done", rid)
+        log_event(rid, target_space, "invoke", "done", thread_id=tid)
+        return {"task_id": tid, "space": target_space, "status": "done", "result": result, "request_id": rid}
     except Exception as e:  # noqa: BLE001
         complete_task(tid, {"error": str(e)}, status="error")
         save_state(tid, {"phase": "error", "err": str(e)})
-        log_task(tid, target_space, "invoke", "error")
-        return {"task_id": tid, "space": target_space, "status": "error", "error": str(e)}
+        log_task(tid, target_space, "invoke", "error", rid)
+        log_event(rid, target_space, "invoke", "error", thread_id=tid, err=str(e))
+        return {"task_id": tid, "space": target_space, "status": "error", "error": str(e), "request_id": rid}
 
 
 @api.get("/task/{thread_id}")
-async def get_task(thread_id: str, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None)) -> dict[str, Any]:
+async def get_task(
+    thread_id: str,
+    x_nexus_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    x_request_id: str | None = Header(None, alias="X-Request-ID"),
+) -> dict[str, Any]:
     """查 task_queue 一行（queued/claimed/done/error）。无返 404。"""
-    auth(x_nexus_key or authorization)
+    rid = new_request_id(x_request_id)
+    auth(x_nexus_key or authorization, rid)
     row = load_task(thread_id)
     if row is None:
-        raise HTTPException(404, f"task {thread_id} 无记录")
-    return {"task_id": thread_id, "space": row.get("space"), "status": row.get("status"), "result": row.get("result")}
+        log_event(rid, _SPACE, "get_task", "not_found", thread_id=thread_id)
+        raise_nexus_error("not_found", f"task {thread_id} 无记录", 404, rid)
+    return {"task_id": thread_id, "space": row.get("space"), "status": row.get("status"), "result": row.get("result"), "request_id": rid}
 
 
 # ── 路由决策 ────────────────────────────────────────────────────────
@@ -147,31 +184,44 @@ class RunBody(BaseModel):
 
 
 @api.post("/run")
-async def run(body: RunBody, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None)) -> dict[str, Any]:
-    auth(x_nexus_key or authorization)
-    return await _do_run(body.prompt, body.force_space)
+async def run(
+    body: RunBody,
+    x_nexus_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    x_request_id: str | None = Header(None, alias="X-Request-ID"),
+) -> dict[str, Any]:
+    rid = new_request_id(x_request_id)
+    auth(x_nexus_key or authorization, rid)
+    return await _do_run(body.prompt, body.force_space, request_id=rid)
 
 
-async def _do_run(prompt: str, force: str | None = None) -> dict[str, Any]:
-    """核心执行，被 HTTP 端点与 Dashboard 共用。"""
+async def _do_run(prompt: str, force: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+    """核心执行，被 HTTP 端点与 Dashboard 共用。
+
+    request_id 由 HTTP 端点传入；Dashboard 直接调时为 None（内部置生成）。透传给下游 call_space。
+    """
     import uuid
 
+    rid = request_id or new_request_id(None)
     thread_id = str(uuid.uuid4())
     space = route(prompt, force)
 
-    log_task(thread_id, "hermes", f"route→{space}", "pending")
+    log_task(thread_id, "hermes", f"route→{space}", "pending", rid)
     save_state(thread_id, {"prompt": prompt, "space": space, "phase": "dispatched"})
+    log_event(rid, _SPACE, "route", "dispatched", thread_id=thread_id, target=space)
 
     try:
-        result = await call_space(space, _target_path(space), {"thread_id": thread_id, "prompt": prompt})
+        result = await call_space(space, _target_path(space), {"thread_id": thread_id, "prompt": prompt}, request_id=rid)
     except Exception as e:  # noqa: BLE001
-        log_task(thread_id, space, "invoke", "error")
+        log_task(thread_id, space, "invoke", "error", rid)
         save_state(thread_id, {"phase": "error", "err": str(e)})
-        return {"task_id": thread_id, "space": space, "error": str(e)}
+        log_event(rid, space, "invoke", "error", thread_id=thread_id, err=str(e))
+        return {"task_id": thread_id, "space": space, "error": str(e), "request_id": rid}
 
-    log_task(thread_id, space, "invoke", "done")
+    log_task(thread_id, space, "invoke", "done", rid)
     save_state(thread_id, {"phase": "done", "downstream": space, "result": result})
-    return {"task_id": thread_id, "space": space, "result": result}
+    log_event(rid, space, "invoke", "done", thread_id=thread_id)
+    return {"task_id": thread_id, "space": space, "result": result, "request_id": rid}
 
 
 # ── 文件管理（R2，借鉴 HermesFace/HuggingMes 的 Dashboard 文件操作）─
@@ -306,7 +356,7 @@ async def _do_run_sync(prompt: str, force: str | None) -> Any:
 async def _ping_all() -> dict[str, Any]:
     import asyncio
 
-    from gateway import ping
+    from shared.gateway import ping
 
     spaces = ["langgraph", "claude", "codex"]
     res = await asyncio.gather(*[ping(s) for s in spaces], return_exceptions=True)

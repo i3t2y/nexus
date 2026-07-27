@@ -24,14 +24,17 @@ _GATEWAY = os.getenv("GATEWAY_URL", "")
 _HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 
-def _gateway_headers() -> dict[str, str]:
+def _gateway_headers(request_id: str | None = None) -> dict[str, str]:
     """调 Worker 网关的 header（网关自身 requireAuth 读 Authorization）。"""
     if not _API_KEY:
         raise RuntimeError("NEXUS_API_KEY 未设置")
-    return {"Authorization": f"Bearer {_API_KEY}", "Content-Type": "application/json"}
+    h: dict[str, str] = {"Authorization": f"Bearer {_API_KEY}", "Content-Type": "application/json"}
+    if request_id:
+        h["X-Request-ID"] = request_id
+    return h
 
 
-def _space_headers() -> dict[str, str]:
+def _space_headers(request_id: str | None = None) -> dict[str, str]:
     """直调下游 HF Space 的 header。
 
     - X-Nexus-Key：下游 app auth() 读（NEXUS_API_KEY）。
@@ -46,16 +49,19 @@ def _space_headers() -> dict[str, str]:
     }
     if _HF_TOKEN:
         h["Authorization"] = f"Bearer {_HF_TOKEN}"
+    if request_id:
+        h["X-Request-ID"] = request_id
     return h
 
 
-async def call_space(space: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def call_space(space: str, path: str, payload: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
     """调下游 Space。优先 Worker 网关，失败回退直调。
 
     Args:
         space: langgraph / claude / codex
         path: 下游 Space 内部路径，如 /execute
         payload: JSON body
+        request_id: 透传 X-Request-ID，缺省不发（下游自生成）
     """
     # ── 主：经 Worker 网关（网关入站鉴权读 Authorization）──
     if _GATEWAY:
@@ -64,7 +70,7 @@ async def call_space(space: str, path: str, payload: dict[str, Any]) -> dict[str
                 r = await c.post(
                     f"{_GATEWAY}/route",
                     json={"space": space, "path": path, "body": payload},
-                    headers=_gateway_headers(),
+                    headers=_gateway_headers(request_id),
                 )
                 if 200 <= r.status_code < 300:
                     return r.json()
@@ -78,7 +84,7 @@ async def call_space(space: str, path: str, payload: dict[str, Any]) -> dict[str
     if not base:
         raise RuntimeError(f"{space} 的 URL 未配置（既无 GATEWAY_URL 也无 {space.upper()}_URL）")
     async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        r = await c.post(f"{base}{path}", json=payload, headers=_space_headers())
+        r = await c.post(f"{base}{path}", json=payload, headers=_space_headers(request_id))
         r.raise_for_status()
         return r.json()
 

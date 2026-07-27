@@ -113,16 +113,17 @@ def load_state(thread_id: str) -> dict[str, Any] | None:
     return res.data["state"] if res.data else None
 
 
-def log_task(thread_id: str, space_name: str, action: str, status: str) -> None:
-    """写一条 task_logs 记录。"""
-    supabase_client().table("task_logs").insert(
-        {
-            "thread_id": thread_id,
-            "space_name": space_name,
-            "action": action,
-            "status": status,
-        }
-    ).execute()
+def log_task(thread_id: str, space_name: str, action: str, status: str, request_id: str | None = None) -> None:
+    """写一条 task_logs 记录。request_id 可选，缺省 NULL（旧记录兼容）。"""
+    row: dict[str, Any] = {
+        "thread_id": thread_id,
+        "space_name": space_name,
+        "action": action,
+        "status": status,
+    }
+    if request_id:
+        row["request_id"] = request_id
+    supabase_client().table("task_logs").insert(row).execute()
 
 
 # ── 异步任务队列（task_queue 表，带幂等键）───────────────────────────

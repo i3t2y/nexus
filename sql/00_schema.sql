@@ -22,17 +22,27 @@ create trigger agent_states_touch before update on agent_states
 for each row execute function touch_updated_at();
 
 -- 2. 任务日志 --------------------------------------------------------
+-- request_id：跨组件串联排障用（X-Request-ID 透传），可空
 create table if not exists task_logs (
     id          bigserial primary key,
     thread_id   text        not null,
     space_name  text        not null,   -- hermes / langgraph / claude / codex
     action      text        not null,
     status      text        not null,   -- pending / running / done / error
+    request_id  text,                   -- 串联用，可空（旧记录兼容）
     created_at  timestamptz not null default now()
 );
+-- 既有库增量补列（schema 幂等重跑安全）
+do $$ begin
+  if not exists (select 1 from information_schema.columns
+                 where table_name='task_logs' and column_name='request_id') then
+    alter table task_logs add column request_id text;
+  end if;
+end $$;
 create index if not exists task_logs_thread_idx    on task_logs (thread_id);
 create index if not exists task_logs_created_idx   on task_logs (created_at desc);
-create index if not exists task_logs_status_idx   on task_logs (status);
+create index if not exists task_logs_status_idx    on task_logs (status);
+create index if not exists task_logs_request_idx   on task_logs (request_id);
 
 -- 3. 长期记忆 --------------------------------------------------------
 create table if not exists long_memory (
@@ -78,13 +88,28 @@ create table if not exists skills_index (
 create index if not exists skills_index_last_used_idx on skills_index (last_used desc);
 
 -- 6. R2 备份快照登记（persist_to_r2.py 写入的元数据）------------------
+-- sha256：备份对象内容校验和，restore 时复算比对验证完整性（防 R2 静默损坏/截断）
+-- r2_size：对象字节数，便于核对
 create table if not exists backup_snapshots (
     id          bigserial primary key,
     table_name  text not null,
     r2_key      text not null,
     row_count   integer,
+    sha256      text,                   -- 备份对象 sha256 hex；可空（旧记录兼容）
+    r2_size     bigint,                  -- 对象字节数；可空
     created_at  timestamptz not null default now()
 );
+-- 既有库增量补列（schema 幂等重跑安全）
+do $$ begin
+  if not exists (select 1 from information_schema.columns
+                 where table_name='backup_snapshots' and column_name='sha256') then
+    alter table backup_snapshots add column sha256 text;
+  end if;
+  if not exists (select 1 from information_schema.columns
+                 where table_name='backup_snapshots' and column_name='r2_size') then
+    alter table backup_snapshots add column r2_size bigint;
+  end if;
+end $$;
 create index if not exists backup_snapshots_table_idx on backup_snapshots (table_name, created_at desc);
 
 -- 7. Space 健康快照（保活探测结果留痕）-------------------------------

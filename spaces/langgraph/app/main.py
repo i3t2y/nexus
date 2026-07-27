@@ -16,26 +16,30 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from storage import log_task, save_checkpoint, dumps
 from shared.checkpointer import build_checkpointer
+from shared.errors import new_request_id, raise_nexus_error, log_event
 
 _API_KEY = os.getenv("NEXUS_API_KEY", "")
 _DB_URI = os.getenv("SUPABASE_DB_URI", "")
+_SPACE = "langgraph"
 
 
-def auth(authorization: str | None) -> None:
+def auth(authorization: str | None, request_id: str) -> None:
     """fail-closed：缺 key = 配置错误，拒绝而非放行。本地免鉴权设 NEXUS_AUTH_MODE=dev。"""
     if os.getenv("NEXUS_AUTH_MODE") == "dev":
         return
     if not _API_KEY:
-        raise HTTPException(500, "NEXUS_API_KEY 未配置（生产必填；本地免鉴权设 NEXUS_AUTH_MODE=dev）")
+        log_event(request_id, _SPACE, "auth", "error", reason="NEXUS_API_KEY 未配置")
+        raise_nexus_error("config_error", "NEXUS_API_KEY 未配置（生产必填；本地免鉴权设 NEXUS_AUTH_MODE=dev）", 500, request_id)
     if authorization != f"Bearer {_API_KEY}":
-        raise HTTPException(401, "unauthorized")
+        log_event(request_id, _SPACE, "auth", "error", reason="bad credential")
+        raise_nexus_error("unauthorized", "鉴权失败", 401, request_id)
 
 
 # ── 最小示意 StateGraph ────────────────────────────────────────────
@@ -107,17 +111,26 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/execute")
-async def execute(body: ExecBody, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None)) -> dict[str, Any]:
-    auth(x_nexus_key or authorization)
+async def execute(
+    body: ExecBody,
+    x_nexus_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    x_request_id: str | None = Header(None, alias="X-Request-ID"),
+) -> dict[str, Any]:
+    rid = new_request_id(x_request_id)
+    auth(x_nexus_key or authorization, rid)
     if not _DB_URI:
-        raise HTTPException(500, "SUPABASE_DB_URI 未配置，无法用 PostgresSaver")
+        log_event(rid, _SPACE, "execute", "error", reason="SUPABASE_DB_URI 未配置")
+        raise_nexus_error("config_error", "SUPABASE_DB_URI 未配置，无法用 PostgresSaver", 500, rid)
     cp = getattr(app.state, "cp", None)
     graph = getattr(app.state, "graph", None)
     if cp is None or graph is None:
         # lifespan 未就绪（DB 不可达或仍在启动）—— fail-closed 而非裸连
-        raise HTTPException(503, "checkpointer 未就绪（DB 不可达或服务仍在启动）")
+        log_event(rid, _SPACE, "execute", "error", reason="checkpointer 未就绪")
+        raise_nexus_error("db_unavailable", "checkpointer 未就绪（DB 不可达或服务仍在启动）", 503, rid)
 
-    log_task(body.thread_id, "langgraph", "execute", "running")
+    log_task(body.thread_id, "langgraph", "execute", "running", rid)
+    log_event(rid, _SPACE, "execute", "running", thread_id=body.thread_id)
     try:
         final = await graph.ainvoke(
             {"prompt": body.prompt},
@@ -126,8 +139,10 @@ async def execute(body: ExecBody, x_nexus_key: str | None = Header(None), author
         # 最终状态 blob 落 R2（小状态也可不落，仅演示）
         save_checkpoint(body.thread_id, dumps(final))
     except Exception as e:  # noqa: BLE001
-        log_task(body.thread_id, "langgraph", "execute", "error")
-        raise HTTPException(502, f"graph failed: {e}") from e
+        log_task(body.thread_id, "langgraph", "execute", "error", rid)
+        log_event(rid, _SPACE, "execute", "error", thread_id=body.thread_id, err=str(e))
+        raise_nexus_error("downstream_unreachable", f"graph failed: {e}", 502, rid)
 
-    log_task(body.thread_id, "langgraph", "execute", "done")
-    return {"thread_id": body.thread_id, "result": final}
+    log_task(body.thread_id, "langgraph", "execute", "done", rid)
+    log_event(rid, _SPACE, "execute", "done", thread_id=body.thread_id)
+    return {"thread_id": body.thread_id, "result": final, "request_id": rid}

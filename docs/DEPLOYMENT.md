@@ -44,11 +44,32 @@
 各 Space 的 Docker build context 是 Space 目录本身；根 `libs/` 需先复制进每个 Space 才能被 Dockerfile `COPY libs ./libs`。
 
 ```bash
-bash scripts/sync-spaces.sh   # 把 libs/ 复制进 spaces/*/libs/
+bash scripts/sync-spaces.sh          # 把 libs/ 复制进 spaces/*/libs/
+bash scripts/sync-spaces.sh --check  # 仅校验一致性（不写），不一致退出 1
 ```
 
-- **每次改根 `libs/` 后、每条 `git push` 前**必须重跑此脚本，否则 Space 跑的是旧库。
+- **每次改根 `libs/` 后、每条 `git push` 前**必须重跑同步脚本，否则 Space 跑的是旧库。
+- CI 闸门：`.github/workflows/sync-check.yml` 在 push 触动 `libs/` 或 `spaces/*/libs/` 时跑 `--check` + py_compile + tsc，挡旧库/语法错进 HF。
 - 提交时 `spaces/*/libs/` 为同步产物，可提交（HF 直接读 repo 无构建后同步步骤）。
+
+## 步骤 2.6：备份恢复（R2 → Supabase 反向闭环，事故后用）
+
+`persist_to_r2.py` 周期把 Supabase 业务表快照到 R2（含 sha256 + R2 manifest）；`restore_from_r2.py` 做反向恢复：
+
+```bash
+# 只读：看 R2 内各表最新快照的 sha256/size/行数
+python spaces/hermes/scripts/restore_from_r2.py --list
+# 仅校验完整性（复算 sha256 比对 backup_snapshots 登记值，不写回）
+python spaces/hermes/scripts/restore_from_r2.py --table agent_states --verify-only
+# 恢复单表（service_role upsert on_conflict 覆盖，幂等可重跑）
+python spaces/hermes/scripts/restore_from_r2.py --table agent_states
+# 恢复全部业务表
+python spaces/hermes/scripts/restore_from_r2.py --all
+```
+
+- **校验门**：restore 先复算 R2 对象 sha256 比对 `backup_snapshots.sha256`，不符即拒绝写回（防静默损坏覆盖好数据）。
+- **安全域**：仅 `agent_states`/`long_memory`/`skills_index` 走 upsert 全量覆盖；`task_logs`/`space_health` 等代理键表恢复仅校验通过不写（避免自增主键冲突）。
+- **空快照保护**：空快照跳过写回，防把表整体清空。
 
 ## 步骤 3：部署 Hermes（主控）
 

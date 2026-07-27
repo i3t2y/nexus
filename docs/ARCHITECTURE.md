@@ -97,6 +97,16 @@ Space 内 `/data` 持久存储**已下线**。跨重启持久必须用 R2 / Supa
 
 `langgraph app/main.py` 用 FastAPI `lifespan` 启动建一次 `AsyncPostgresSaver` + `await cp.setup()` + 编译 graph，存 `app.state`；请求复用全局 checkpointer+graph，**不再每请求 setup**（违背文档"setup() 仅启动一次"+ 每次新连接开销量）。`AsyncPostgresSaver` 由 `build_checkpointer()`（`libs/shared/checkpointer.py`）构造，`from_conn_string` 内已设 `prepare_threshold=0`/`autocommit`/`row_factory`，6543 安全。
 
+### 统一错误结构 + request_id 透传
+
+- **统一错误体**：所有 Space 与 Worker 失败返回 `{error:{code, message, retryable, request_id}}`（`libs/shared/errors.py` 的 `error_response` / `raise_nexus_error`）。`retryable` 按 code 推断（下游暂时不可达类 = 可重试；配置/鉴权类 = 否），客户端据此决定是否重试，与 [幂等键](#幂等键防双扣费--双执行) 配合防双扣费。
+- **request_id 透传**：入站 header `X-Request-ID` 缺则生成 uuid4；hermes 调下游 `call_space(..., request_id=rid)` 透传 `X-Request-ID`、Worker `/route` 同名透传下游，全链路同 rid。`task_logs.request_id` 列记录（schema `do $$` 增量补列，幂等重跑安全），`log_event` 写结构化 JSON 日志（stdout，HF Space 抓）含 `ts/request_id/space/action/status`。
+- **fail-closed 仍生效**：`auth(cred, request_id)` 缺 key → `raise_nexus_error("config_error", ..., 500, rid)`，不"忘配即放行"。
+
+### 共享库导入路径修正
+
+`gateway` 在 `libs/shared/` 子包，**勿用 `from gateway import`**（顶层解析失败，PYTHONPATH=libs 不含 `shared/`）。各 Space 用 `from shared.gateway import call_space, ping`。`storage` 仍是顶层包（`libs/storage/`），`from storage import ...` 不变。
+
 ### Hermes Agent ≠ HTTP 服务（查证修正）
 
 Nous Research 开源 Hermes Agent（`github.com/NousResearch/hermes-agent`，`curl install.sh | bash` 安装）是 **TUI/CLI 交互式 agent**，基于 `uv` 装在 `~/.hermes/`。`hermes gateway start` 指**消息平台网关**（Telegram/Discord 等），**不监听 HTTP 端口**，**无 `--port` 参数**。
@@ -128,7 +138,7 @@ API 已对照官方文档（2026-07）：
 | Supabase 自身保活 | 查证补充 | `keepalive.py` 每轮 `space_health` insert = 轻量写 DB，防免费档 1 周不活跃自动暂停（查证 pricing.ts） | `spaces/hermes/scripts/keepalive.py` |
 | Ephemeral Package Replay | HuggingMes | 重启重装历史 pip 包 | `spaces/hermes/scripts/replay_packages.py`、`start.sh` |
 | 自愈 Gateway | HuggingMes | `start.sh` while 循环重启崩溃 app | `spaces/hermes/start.sh` |
-| 原子备份/恢复 | HermesFace | R2 写 tmp→copy 原子替换（替代 HF Dataset 原子写） | `spaces/hermes/scripts/persist_to_r2.py` |
+| 原子备份/恢复 | HermesFace | R2 写 tmp→copy 原子替换（替代 HF Dataset 原子写）；备份算 sha256+size 写 `backup_snapshots` 表与 R2 manifest，`restore_from_r2.py` 反向闭环时复算校验 | `spaces/hermes/scripts/persist_to_r2.py`、`restore_from_r2.py` |
 | Supabase→R2 双写同步 | 两者 | 周期把 Supabase 表快照写 R2（5分钟） | 同上 |
 | Dashboard 文件管理 | 两者 | Gradio Tab：R2 文件 上传/读入/编辑/保存/删除/刷新 | `spaces/hermes/app/main.py` |
 
@@ -139,7 +149,8 @@ spaces/hermes/
 ├── app/main.py        # Gradio Dashboard + FastAPI 路由（同进程7860）
 ├── libs/              # 同步的共享库（storage/gateway）
 └── scripts/
-    ├── persist_to_r2.py      # Supabase→R2 双写快照（原子覆盖）
+    ├── persist_to_r2.py      # Supabase→R2 双写快照（原子覆盖 + sha256 + manifest）
+    ├── restore_from_r2.py    # R2→Supabase 反向恢复（--table/--all/--list，sha256 校验门）
     ├── replay_packages.py    # 重启重装包
     └── keepalive.py          # 下游 Space 保活探测
 ```
