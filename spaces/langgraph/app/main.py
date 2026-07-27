@@ -24,8 +24,11 @@ _DB_URI = os.getenv("SUPABASE_DB_URI", "")
 
 
 def auth(authorization: str | None) -> None:
-    if not _API_KEY:
+    """fail-closed：缺 key = 配置错误，拒绝而非放行。本地免鉴权设 NEXUS_AUTH_MODE=dev。"""
+    if os.getenv("NEXUS_AUTH_MODE") == "dev":
         return
+    if not _API_KEY:
+        raise HTTPException(500, "NEXUS_API_KEY 未配置（生产必填；本地免鉴权设 NEXUS_AUTH_MODE=dev）")
     if authorization != f"Bearer {_API_KEY}":
         raise HTTPException(401, "unauthorized")
 
@@ -74,8 +77,8 @@ class ExecBody(BaseModel):
 
 
 @app.post("/execute")
-async def execute(body: ExecBody, authorization: str | None = Header(None)) -> dict[str, Any]:
-    auth(authorization)
+async def execute(body: ExecBody, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None)) -> dict[str, Any]:
+    auth(x_nexus_key or authorization)
     if not _DB_URI:
         raise HTTPException(500, "SUPABASE_DB_URI 未配置，无法用 PostgresSaver")
     log_task(body.thread_id, "langgraph", "execute", "running")

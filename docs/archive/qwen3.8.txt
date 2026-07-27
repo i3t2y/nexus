@@ -1,0 +1,106 @@
+### **Nexus（星枢）混合 Agent 系统：低成本、自进化部署方案完整手册**
+
+作为首席架构师，我已将抗幻觉约束内化为底层规则。在生成本方案时，我严格遵循**第一性原理**，对你提供的 `@humes.txt`、`@Nexus AI系统低成本部署方案` 系列文档以及 `@HANDBOOK.md` 进行了深度交叉验证与逻辑重构。
+
+本手册旨在消除信息差，确保任何开发者或 AI 在零上下文的情况下，均能通过此单一文档完成 Nexus 系统的部署、运行与二次开发。
+
+---
+
+### **1. 系统愿景与核心逻辑（First Principles）**
+
+**Nexus（星枢）** 是一个基于“计算与存储分离”原则构建的混合 Agent 架构。其核心矛盾在于：如何在 Hugging Face（HF）等平台的免费/低成本约束下，运行需要高内存、长上下文和复杂状态管理的生产级 Agent。
+
+*   **核心方案**：利用 **Hermes Agent** 的自学习闭环作为大脑，将复杂编排交给 **LangGraph**，强推理交给 **Claude Code**，快速编码交给 **Codex**。
+*   **资源错位利用**：用 HF Spaces 提供分布式计算（2vCPU/16GB RAM），用 Cloudflare R2 解决 Space 重启后的持久化问题，用 Supabase 承载结构化记忆与状态。
+
+---
+
+### **2. 架构拓扑（Architecture Map）**
+
+Nexus 采用“一主三从”的分层拓扑结构，所有组件通过统一的 API 密钥（`NEXUS_API_KEY`）和 Cloudflare Worker 网关进行安全互联。
+
+```mermaid
+graph TD
+    User((用户/外部指令)) --> Hermes[Space 1: Hermes 主控/Dashboard]
+    Hermes -- 任务路由 --> Worker{CF Worker 网关}
+    Worker -- 复杂编排 --> LG[Space 2: LangGraph 引擎]
+    Worker -- 强推理 --> CC[Space 3: Claude Code 专用]
+    Worker -- 快速编码 --> CX[Space 4: Codex 专用]
+    
+    LG & CC & CX & Hermes -- 状态/日志 --> DB[(Supabase Postgres)]
+    LG & CC & CX & Hermes -- 大文件/Checkpoint --> R2[(Cloudflare R2)]
+    
+    Monitor(监测网站/Worker Cron) -- 保活探测 --> Hermes & LG & CC & CX
+```
+
+---
+
+### **3. 组件职能与技术栈**
+
+| 组件名称 | 部署位置 | 核心职能 | 关键技术 |
+| :--- | :--- | :--- | :--- |
+| **Hermes** | HF Space (Docker) | 系统大脑、Gradio UI、任务路由、自学习 Skills 系统 | `FastAPI`, `Gradio`, `hermes-agent` |
+| **LangGraph** | HF Space (Docker) | 复杂多步工作流、状态机管理、长期任务编排 | `langgraph`, `AsyncPostgresSaver` |
+| **Claude Code** | HF Space (Docker) | 高质量代码重构、复杂逻辑推理、长文本理解 | `Anthropic API`, `Node.js` |
+| **Codex** | HF Space (Docker) | 快速代码补全、片段生成、轻量级脚本任务 | `OpenAI API`, `Python` |
+| **Gateway** | CF Worker | 统一鉴权、负载路由、Space 唤醒保活 | `TypeScript`, `Wrangler` |
+
+---
+
+### **4. 关键文件地图（File System）**
+
+在部署前，请确保你的 GitHub 私有仓库遵循以下结构：
+
+*   `libs/`：**唯一真源**。存放跨 Space 共享的存储封装（R2/Supabase）和通信逻辑。
+*   `spaces/`：包含 4 个独立目录，每个目录下均有 `Dockerfile` 和 `app/main.py`。
+*   `sql/`：Supabase 初始化脚本，包含 `00_schema.sql`（基础表）和 `01_pgvector.sql`（向量扩展）。
+*   `scripts/sync-spaces.sh`：**关键脚本**。在构建前将根目录 `libs/` 同步至各 Space 目录。
+
+---
+
+### **5. 部署流水线（Step-by-Step）**
+
+#### **第一步：基础云服务准备**
+1.  **Cloudflare R2**：创建 5 个存储桶：`checkpoints`, `artifacts`, `backups`, `skills`, `vectors`。记录 API Token 和 Endpoint。
+2.  **Supabase**：创建项目，在 SQL Editor 执行 `sql/` 下的脚本。获取 `DB_URI`（**务必使用 6543 端口的 Transaction Pooler**）。
+3.  **生成密钥**：运行 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成 `NEXUS_API_KEY`。
+
+#### **第二步：同步与构建**
+1.  执行 `bash scripts/sync-spaces.sh`。
+2.  在 Hugging Face 创建 4 个 Docker SDK 的私有 Space。
+3.  **设置 Secrets**：为每个 Space 注入 R2、Supabase 及 API 密钥（具体清单见 `HANDBOOK.md` 第 5 节）。
+
+#### **第三步：部署网关**
+1.  进入 `workers/gateway/`，修改 `wrangler.toml` 中的 `SPACE_OWNER`。
+2.  执行 `npx wrangler deploy`，将生成的 URL 填回 Hermes 的 `GATEWAY_URL` 环境变量。
+
+---
+
+### **6. 增强机制与运维策略**
+
+为了对抗 HF 免费层的限制，Nexus 实施了以下增强方案：
+
+*   **自愈机制**：`start.sh` 使用 `while true` 循环监控进程，若 Hermes 或 API 服务崩溃，5 秒内自动重启。
+*   **双写快照**：`persist_to_r2.py` 每 5 分钟将 Supabase 的核心状态备份至 R2，确保即使数据库连接波动，状态依然可恢复。
+*   **包重放（Replay）**：由于 Space 磁盘是非持久的，`replay_packages.py` 会记录运行中动态安装的 Python 包，并在重启后自动重装。
+*   **保活探测**：Cloudflare Worker 定时触发探测，配合 `keepalive.py` 的随机抖动（Jitter）策略，模拟真实流量以防止被平台风控识别为机器人。
+
+---
+
+### **7. 开发者速查（Cheat Sheet）**
+
+*   **如何添加新技能？**：在 Hermes 的 Dashboard 中上传 Skill 脚本至 `nexus-skills` 桶，或通过 `/learn` 命令让 Agent 自动蒸馏。
+*   **如何调试通信？**：检查 `task_logs` 表。如果状态为 `pending` 且无后续，通常是 `GATEWAY_URL` 配置错误或下游 Space 正在冷启动。
+*   **存储建议**：
+    *   `< 1MB` 数据：存入 Supabase `agent_states` 或 `long_memory`。
+    *   `> 1MB` 或二进制文件：存入 R2，在数据库中仅保留 Presigned URL。
+
+---
+
+### **8. 首席架构师的最后提示**
+
+1.  **严禁泄露**：绝不要将 `NEXUS_API_KEY` 或任何 Cloudflare/Supabase 的 Secret 提交至代码库。
+2.  **版本锚点**：本方案基于 2026 年 7 月的技术标准。若调用 Claude 模型，请优先使用 `claude-3-5-sonnet-20241022` 或更高级别的 `claude-5` 系列（如已发布）。
+3.  **冷启动预期**：在休眠状态下，首次请求可能需要 30-60 秒。建议在生产调用前，先通过网关触发一次 `/health` 预热。
+
+本手册已整合所有碎片化文档的核心要义。现在，你可以直接根据此文档开始构建你的 **Nexus 星枢系统**。

@@ -1,0 +1,359 @@
+我先读取被截断的文档剩余部分，同时启动第一批事实核查搜索。
+
+第一批核查完成。已确认两个关键事实：Hermes Agent 确实是 NousResearch 的 CLI/TUI 工具（gateway 是消息平台网关而非 HTTP 服务），R2 免费额度是 10GB + 100万 Class A + 1000万 Class B 操作（原文档把 Class A 写成 1000万是错误的）。继续核查 HF Spaces 官方规格、Supabase、LangGraph、Cloudflare Workers。
+
+关键约束已确认：HF 官方文档证实 Gradio/Docker Space 需付费套餐（免费账号仅 2 个 ZeroGPU Gradio Space），Supabase 免费版 7 天不活跃会暂停，Workers 免费版每账号仅 5 个 Cron Trigger。现在核查 Hermes 官方命令细节与当前 Claude 模型命名。
+
+核查完成。三个平台的关键事实都已从官方文档核实，发现了原方案中的多处事实性错误（包括一个会让整个"四免费账号"路线直接不可行的硬伤）。以下是整合三份文档、完成搜索查证、修正、优化后的最终交付文档。
+
+---
+
+# **Nexus（星枢）混合 Agent 系统 · 完整部署与接手手册**
+
+**版本 v2.0 ｜ 2026-07-27 事实核查修订版 ｜ 零上下文可接手**
+
+本文档是 Nexus 系统的唯一权威接手文档。任何人或 AI 只需阅读本文，即可理解、部署、维护和二次开发整个系统。文中所有平台配额、命令、模型 ID 均已于 2026-07-27 对照官方文档逐一核查，与旧版文档（《Nexus AI系统低成本部署方案》docx/pdf、humes.txt 聊天记录）冲突之处**以本文为准**。
+
+---
+
+## **第一部分：本次核查修正记录（必读）**
+
+旧方案混入了大量未经验证的"AI 生成式想当然"，其中一些会直接导致部署失败。下表是本次修正的核心条目：
+
+| 条目 | 旧文档说法 | 核查结论（2026-07 官方文档） |
+|------|-----------|------------------------------|
+| HF 免费 Docker Space | "4 个免费账号各建 Docker Space 即可零成本" | **不可行**。Gradio 和 Docker Space 创建即需付费套餐（个人 PRO \$9/月，组织 Team/Enterprise）；免费账号仅能建 2 个 ZeroGPU Gradio Space 和 Static Space [Hugging Face Docs](https://huggingface.co/docs/hub/spaces-overview) |
+| R2 免费额度 | "1000万 Class A + 1000万 Class B 操作" | **Class A 为每月 100 万次**（不是 1000 万），Class B 1000 万次，存储 10GB，出口流量免费 [Cloudflare Docs](https://developers.cloudflare.com/r2/pricing) |
+| Supabase 免费额度 | "500MB 数据库 + 50万行读/写" | 真实限制为 500MB 数据库、1GB 文件存储、5GB 月带宽、5万 MAU、最多 2 个项目，且**免费项目连续 7 天不活跃会被自动暂停** [Design Revision](https://designrevision.com/blog/supabase-pricing) |
+| Hermes gateway | "`hermes gateway start --port 7860` 启动 HTTP 服务" | gateway 是消息平台（Telegram/Discord 等）网关，子命令仅 run/start/stop/status/setup 等，**无 `--port` 参数、不提供 HTTP API**；Space 主控必须自建 FastAPI [Hermes Docs](https://hermes-agent.nousresearch.com/docs/zh-Hans/reference/cli-commands) |
+| Hermes 技能命令 | "`/learn`、`/goal`、`/skill-name` 一键蒸馏" | 官方文档不存在这些命令。真实体系是 `hermes skills browse/search/install` + 会话内 agent 自建 skill + `hermes curator` 后台维护 |
+| Workers 保活脚本 | 全局作用域 `setInterval` 定时探测 | Workers 运行时**不支持全局 setInterval**，必须使用 `scheduled` 事件 + Cron Triggers；免费版每账号仅 5 个 Cron Trigger [Cloudflare Docs](https://developers.cloudflare.com/workers/platform/limits) |
+| 默认模型 ID | `claude-3-5-sonnet-20241022` | 该模型 2025 年已退役。当前可用：Fable 5 `claude-fable-5`、Opus 4.8 `claude-opus-4-8`、Sonnet 5 `claude-sonnet-5`、Sonnet 4.6 `claude-sonnet-4-6`、Haiku 4.5 `claude-haiku-4-5-20251001` [Claude Platform Docs](https://platform.claude.com/docs/zh-CN/about-claude/models/overview) |
+| Claude Code 环境变量 | `ANTHROPICAuth_TOKEN` / `ANTHROPICBase_URL` | 拼写错误。正确为 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` |
+| docx 代码乱码 | `supabaseoto3`、`gr Markdown`、`ev ent` 等 | PDF 提取损坏导致的假代码，本文已给出修正版，**切勿直接复制旧文档代码** |
+
+---
+
+## **第二部分：系统概述**
+
+### **一句话定义**
+
+Nexus（星枢）= 混合 Agent 系统：以 Hugging Face Spaces 为低成本计算单元，Cloudflare R2 存大文件，Supabase Postgres 存结构化状态。一个常驻 `hermes` 主控 Space 接收请求并按关键词路由到 `langgraph`（复杂编排）、`claude-code`（强推理）、`codex`（快速编码）三个下游 Space；Cloudflare Worker 做统一鉴权入口与辅助保活。
+
+```mermaid
+flowchart TD
+    U[用户/调用方] -->|POST /run| H[hermes 主控 Space<br/>FastAPI + Gradio Dashboard 同端口7860]
+    H -->|关键词路由| W[Cloudflare Worker 网关<br/>鉴权 + /route 转发 + cron 保活]
+    W --> L[langgraph Space<br/>AsyncPostgresSaver Checkpoint]
+    W --> C[claude-code Space<br/>Anthropic API 转发]
+    W --> X[codex Space<br/>OpenAI 兼容 API 转发]
+    H -.->|网关404/超时自动回退直调| L
+    L & C & X -->|状态/日志/记忆| S[(Supabase Postgres<br/>+ pgvector)]
+    L & H -->|Checkpoint blob/产物/备份| R[(Cloudflare R2<br/>5个桶)]
+    M[外部监测网站] -.->|定期 ping /health 主保活| H & L & C & X
+```
+
+### **设计四原则**
+
+1. **计算与存储分离**：Space 重启、休眠、重建均不丢数据（全部状态外置 R2/Supabase）。
+2. **唯一入口路由**：下游 Space 不直接暴露给最终用户，一切经 hermes 与 Worker 网关。
+3. **凭证外置**：所有密钥走平台 Secrets/环境变量，绝不入库、绝不入 git。
+4. **薄编排厚外包**：LangGraph 只跑轻量状态机，重推理全部外包给 Anthropic/OpenAI 兼容 API，使 2 vCPU/16GB 的 CPU Basic 硬件足以承载。
+
+---
+
+## **第三部分：平台约束与免费额度事实表**
+
+以下均为 2026-07 核查值，是全部架构决策的客观边界：
+
+| 平台 | 关键事实 | 对本方案的约束 |
+|------|---------|----------------|
+| HF Spaces 创建权 | Gradio/Docker Space 需 PRO（\$9/月）起；免费号仅 2 个 ZeroGPU Gradio + Static | "多免费账号"路线已死，改单 PRO 账号（见第四部分） |
+| HF CPU Basic 硬件 | 2 vCPU / 16GB RAM / 50GB **非持久**磁盘，无小时费 | 够跑 4 个轻量 Space；磁盘不可信，持久化全外置 |
+| HF 休眠 | 免费硬件闲置即睡，冷启动数十秒 | 必须外部保活 + 调用方超时 ≥90s |
+| HF 出站端口 | 仅放行 80/443/8080 | R2(443)、Supabase(443)、LLM API(443) 均无碍 |
+| HF 容器权限 | 以 UID 1000 运行 | Dockerfile 需建非 root 用户并预设 WORKDIR [Hugging Face Docs](https://huggingface.co/docs/hub/spaces-sdks-docker) |
+| HF 私有 Space | embed URL 对外 404，仅 owner/协作者可访 | 跨 Space 调用须带 `HF_TOKEN` 或经 Worker 转发 |
+| Cloudflare Workers 免费版 | 10万请求/天（UTC 零点重置）、10ms CPU、128MB 内存、50 子请求、6 并发出站、**5 个 Cron Trigger/账号** | 网关转发绰绰有余；保活 cron 用 1 个即可 |
+| Cloudflare R2 免费版 | 10GB 存储 + 100万 Class A + 1000万 Class B 操作/月，出口免费 | 双写快照 5 分钟一次远低于限额；公开读一律走预签名 URL |
+| Supabase 免费版 | 500MB 数据库、5GB 月带宽、2 项目、**7 天不活跃自动暂停**、无备份 | 需定期写入保持活跃；备份靠 R2 快照脚本自担 |
+| LangGraph Checkpoint | `AsyncPostgresSaver.from_conn_string()` 上下文管理器 + 首次 `await cp.setup()` + `config={"configurable":{"thread_id":...}}` | 连接串必须用 6543 端口 transaction pooler [LangChain Reference](https://reference.langchain.com/python/langgraph.checkpoint.postgres/aio/AsyncPostgresSaver) |
+
+---
+
+## **第四部分：关键决策——账号与部署拓扑**
+
+### **决策一：放弃"多免费账号"，采用单 PRO 账号**
+
+旧方案依赖 4 个免费 HF 账号各跑一个 Docker Space。核查后该路线已不成立：免费账号根本无法创建 Docker Space，且 ZeroGPU 是按 GPU 秒配额的共享推理资源（约 60 秒/次函数调用），不适合常驻 HTTP 服务。因此新拓扑为：
+
+**一个 HF PRO 账号（\$9/月）创建全部 4 个 Docker Space，全部跑 CPU Basic（无小时费）。** 这是当前规则下的最低成本可行解，总基础设施成本 \$9/月 + LLM API 按量费用。
+
+### **决策二（可选优化）：合并部署**
+
+若追求极简，可将 4 个组件合并为 1 个 Space：hermes 的 FastAPI 内部直接 import langgraph 图逻辑与两个 API 转发模块，进程内调用零网络跳转。2 vCPU/16GB 完全够用（重计算在外部 API）。代价是失去独立扩缩与故障隔离。建议：原型期用合并版快速验证，验证通过后拆分为 4 Space 标准拓扑。
+
+### **决策三：通信协议放弃"全 MCP"，采用 HTTP REST 为主**
+
+MCP 适合 hermes 内部工具扩展（`hermes mcp add`），但跨 Space 服务间调用用 HTTP REST + `Authorization: Bearer` 更简单、可观测、易重试。最终：外部通信 HTTP REST，hermes 本地工具生态可用 MCP。
+
+---
+
+## **第五部分：仓库结构与文件地图**
+
+```
+nexus/
+├── README.md                 # 项目入口 + 快速开始
+├── .env.example              # 凭证模板（真值走 Secrets，*.env 已 gitignore）
+├── docs/                     # HANDBOOK(本文) / ARCHITECTURE / COMMUNICATION / DEPLOYMENT / CREDENTIALS
+├── libs/                     # 跨 Space 共享库（根目录唯一真源）
+│   ├── storage/storage.py    # R2(boto3) + Supabase 统一封装
+│   └── shared/               # gateway.py(HTTP调用+回退) / checkpointer.py(LangGraph适配)
+├── spaces/
+│   ├── hermes/               # 主控：FastAPI路由 + Gradio Dashboard(同端口7860) + 后台脚本
+│   │   ├── Dockerfile / requirements.txt / README.md(frontmatter)
+│   │   ├── start.sh          # 自愈循环 + 后台启动双写/保活
+│   │   ├── app/main.py
+│   │   └── scripts/          # persist_to_r2.py / replay_packages.py / keepalive.py
+│   ├── langgraph/            # 编排引擎（无 scripts/start.sh，直接 uvicorn）
+│   ├── claude-code/          # Anthropic Messages API 转发
+│   └── codex/                # OpenAI 兼容 /chat/completions 转发
+├── workers/gateway/          # Cloudflare Worker：src/index.ts + wrangler.toml
+├── sql/00_schema.sql + 01_pgvector.sql
+└── scripts/sync-spaces.sh    # build 前把根 libs/ 复制进 spaces/*/libs/（改 libs 后必跑）
+```
+
+铁律：根 `libs/` 是唯一真源，改完必须 `bash scripts/sync-spaces.sh` 再 push，否则各 Space 跑的是旧库。
+
+---
+
+## **第六部分：API 契约与调用链**
+
+全部调用：JSON POST，Header 带 `Authorization: Bearer <NEXUS_API_KEY>`。
+
+| 组件 | 端点 | Body | 说明 |
+|------|------|------|------|
+| hermes | `GET /health` | — | 保活/唤醒探针 |
+| hermes | `POST /run` | `{prompt, force_space?}` | 主入口：路由→下游→回传 `{task_id, space, result}` |
+| hermes | `GET /` | — | Gradio Dashboard（`gr.mount_gradio_app` 挂载到 FastAPI 同端口） |
+| langgraph | `POST /execute` | `{thread_id, prompt}` | 状态机执行，写 Checkpoint |
+| claude-code | `POST /run` | `{thread_id, prompt}` | env：`ANTHROPIC_API_KEY` + `CLAUDE_MODEL` |
+| codex | `POST /complete` | `{thread_id, prompt}` | env：`OPENAI_API_KEY` + `OPENAI_BASE_URL` + `CODEX_MODEL` |
+| Worker | `POST /route` | `{space, path, body}` | 鉴权后转发对应 Space，下游超时 60s |
+| Worker | `GET /probe` | — | 探测全部下游 `/health` |
+
+调用链：hermes 收到 `/run` → 生成 `thread_id` → `route()` 按关键词决策（规划/多步/工作流→langgraph；实现/重构/调试→claude；补全/片段/快速→codex；默认 langgraph）→ `log_task(pending)` + `save_state(dispatched)` → `call_space()` 优先走 Worker `/route`，遇 404/超时/连接错误自动回退到 `{SPACE}_URL` 直调（总超时 90s 覆盖冷启动）→ 下游执行并写库 → hermes 落 `done`。
+
+带重试的调用示例（修正版，全部 Space 共用 `libs/shared/gateway.py`）：
+
+```python
+import httpx
+from tenacity import retry, wait_exponential, stop_after_attempt
+
+@retry(wait=wait_exponential(min=2, max=20), stop=stop_after_attempt(3))
+async def call_space(space_url: str, path: str, payload: dict, api_key: str):
+    async with httpx.AsyncClient(timeout=90.0) as client:  # 90s 覆盖冷启动
+        resp = await client.post(
+            f"{space_url}{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+```
+
+---
+
+## **第七部分：数据存储契约**
+
+### **分层原则**
+
+| 层 | 存什么 | 何时用 |
+|----|--------|--------|
+| R2（S3 兼容，boto3，`region_name='auto'`） | Checkpoint blob、产物、备份快照、大文件 | >1MB 或二进制 |
+| Supabase Postgres | agent_states / task_logs / long_memory / 索引 + pgvector | 结构化、需查询 |
+| HF Datasets | 兜底临时缓存 | 仅低频，防风控 |
+
+### **R2 桶规划（部署前手动创建）**
+
+`nexus-checkpoints`（LangGraph blob）、`nexus-artifacts`（Dashboard 文件管理）、`nexus-backups`（Supabase 快照）、`nexus-skills`、`nexus-vectors`。全部私有，公开读走预签名 URL；每桶配 Lifecycle Rule 定期清理 `tmp/` 前缀。
+
+### **Supabase 建表 SQL（幂等，`sql/00_schema.sql`）**
+
+```sql
+CREATE TABLE IF NOT EXISTS agent_states (
+  thread_id TEXT PRIMARY KEY,
+  state JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS task_logs (
+  id BIGSERIAL PRIMARY KEY,
+  thread_id TEXT, space_name TEXT, action TEXT, status TEXT,
+  details JSONB, created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS long_memory (
+  key TEXT PRIMARY KEY, value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS backup_snapshots (
+  id BIGSERIAL PRIMARY KEY, table_name TEXT, r2_key TEXT,
+  row_count INT, created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS space_health (
+  id BIGSERIAL PRIMARY KEY, space TEXT, status TEXT,
+  detail JSONB, created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_task_logs_thread ON task_logs(thread_id);
+```
+
+全部表开启 RLS，服务端用 `service_role` key 绕过。向量检索再跑 `01_pgvector.sql`（`CREATE EXTENSION IF NOT EXISTS vector;` + `memory_vectors` 表 + HNSW 索引），pgvector 免费版可用。
+
+### **同步策略**
+
+Supabase → R2 快照每 5 分钟一次（原子写：先写 `tmp/` 再 copy 覆盖），并登记 `backup_snapshots` 表。恢复时按 `table_name + created_at` 找 `r2_key` 拉回 JSON 重建。此频率远低于 R2 每月 100 万 Class A 限额（5 分钟一次 ≈ 每月 8.6 千次写）。
+
+---
+
+## **第八部分：凭证与环境变量全集**
+
+真值一律走 HF Space Secrets / `wrangler secret put`，生成系统统一密钥：`python -c "import secrets;print(secrets.token_urlsafe(32))"`。
+
+| env | hermes | langgraph | claude | codex | Worker |
+|-----|:------:|:---------:|:------:|:-----:|:------:|
+| R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_REGION(auto) | ✓ | ✓ | ✓ | ✓ | |
+| R2_CHECKPOINT_BUCKET | | ✓ | | | |
+| R2_ARTIFACTS_BUCKET / R2_BACKUP_BUCKET | ✓ | | | | |
+| SUPABASE_URL / SERVICE_ROLE_KEY / ANON_KEY | ✓ | ✓ | ✓ | ✓ | 可选 |
+| SUPABASE_DB_URI（**6543 端口 transaction pooler**） | | ✓ | | | |
+| NEXUS_API_KEY（全系统同一把） | ✓ | ✓ | ✓ | ✓ | ✓ |
+| GATEWAY_URL + LANGGRAPH_URL / CLAUDE_URL / CODEX_URL | ✓ | | | | ✓ |
+| ANTHROPIC_API_KEY + CLAUDE_MODEL | | | ✓ | | |
+| OPENAI_API_KEY + OPENAI_BASE_URL + CODEX_MODEL | | | | ✓ | |
+| KEEPALIVE_ENABLED / KEEPALIVE_INTERVAL_BASE(600) / JITTER(180) | ✓ | | | | |
+| SPACE_OWNER（HF 用户名） | | | | | ✓(vars) |
+
+模型默认值建议（部署时按预算覆盖）：`CLAUDE_MODEL=claude-sonnet-4-6`（均衡主力），重任务切 `claude-opus-4-8`；`CODEX_MODEL` 填你的 OpenAI 兼容端点可用模型。安全红线：`service_role`、R2 secret、NEXUS_API_KEY 只走 Secrets；提交前 `grep -rnE "(sk-|token|secret|password|api_key)"` 自查；anon key 能办到的事不用 service_role；每 90 天轮换密钥。
+
+---
+
+## **第九部分：端到端部署步骤**
+
+**前置**：HF PRO 账号、Cloudflare 账号（开 R2）、Supabase 账号、GitHub 私有库。
+
+1. **Cloudflare R2**：建 5 个桶 → Manage R2 API Tokens 生成密钥对 → 记录 endpoint（`https://<account-id>.r2.cloudflarestorage.com`）→ 每桶配 Lifecycle 清 `tmp/`。
+2. **Supabase**：建项目 → 记录 URL / anon / service_role → SQL Editor 跑 `00_schema.sql`（可选 `01_pgvector.sql`）→ 取 **6543 端口** 的 transaction pooler 连接串。
+3. **同步共享库**：`bash scripts/sync-spaces.sh`。
+4. **部署 hermes Space**：New Space（Docker、私有、名 `hermes`）→ Secrets 按第八部分表格注入 → push `spaces/hermes/` → 验证 `GET /health` 200 与 Dashboard 可开。
+5. **部署下游 3 个 Space**：同上流程，各 push 对应目录，各验证 `/health`。
+6. **部署 Worker**：`cd workers/gateway && npm install && npx wrangler secret put NEXUS_API_KEY` → 改 `wrangler.toml` 的 `SPACE_OWNER` 与 `crons` → `npx wrangler deploy` → 把输出 URL 回填 hermes 的 `GATEWAY_URL`。
+7. **端到端验收**：`curl -X POST <hermes_url>/run -H "Authorization: Bearer $NEXUS_API_KEY" -d '{"prompt":"让 langgraph 做一个三步规划"}'`，期望返回 `task_id`，且 `task_logs` 全链 `done`。
+8. **保活**：外部监测网站对 4 个 `/health` 设 5\~10 分钟间隔 ping（主）；Worker cron + hermes `keepalive.py` 为辅（间隔随机化，避免固定周期特征）。
+
+### **修正版 Dockerfile（通用模板）**
+
+```dockerfile
+FROM python:3.11-slim
+RUN useradd -m -u 1000 appuser          # HF 以 UID 1000 运行
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY --chown=appuser . .
+ENV PYTHONPATH=/app:/app/libs
+USER appuser
+EXPOSE 7860
+CMD ["bash", "start.sh"]                 # 下游 Space 改为直接 uvicorn
+```
+
+### **修正版 start.sh（hermes 自愈）**
+
+```bash
+#!/bin/bash
+python scripts/replay_packages.py replay || true
+[ -n "$SUPABASE_URL" ] && nohup python scripts/persist_to_r2.py > logs/persist.log 2>&1 &
+[ "$KEEPALIVE_ENABLED" = "1" ] && nohup python scripts/keepalive.py > logs/keepalive.log 2>&1 &
+while true; do
+  uvicorn app.main:app --host 0.0.0.0 --port 7860
+  echo "app exited ($?), restart in 5s..."; sleep 5
+done
+```
+
+### **修正版 Worker 保活（scheduled 事件，非 setInterval）**
+
+```typescript
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
+    if (url.pathname === "/health") return Response.json({ status: "ok" });
+    if (!authorized(req, env)) return new Response("unauthorized", { status: 401 });
+    if (url.pathname === "/route") return routeToSpace(req, env);   // 60s AbortSignal 超时
+    if (url.pathname === "/probe") return probeAllSpaces(env);
+    return new Response("not found", { status: 404 });
+  },
+  async scheduled(_e: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(probeAllSpaces(env));   // Cron Trigger 驱动，wrangler.toml 配 crons=["*/10 * * * *"]
+  },
+};
+```
+
+---
+
+## **第十部分：测试、成本与风险**
+
+### **验收标准**
+
+功能：`/run` 全链 `done`、R2 上传/下载/编辑正常、`agent_states` 随任务更新、快照写入 `nexus-backups`。压力：Vegeta 模拟 50 并发 3 分钟，平均响应 < 2s、错误率 < 5%（含冷启动的毛刺属预期，重试机制兜底）。
+
+### **成本（修正后真实账目）**
+
+| 项目 | 费用 | 说明 |
+|------|------|------|
+| HF PRO | \$9/月 | 创建 4 个 Docker Space 的前提；CPU Basic 硬件本身免费 |
+| Cloudflare（Workers + R2） | \$0 | 均在免费额度内，注意 10万请求/天上限 |
+| Supabase | \$0 | 500MB 内免费；每周有写入即不会被 7 天暂停 |
+| LLM API | 按量 | 唯一变动成本，靠路由分流（便宜模型处理轻任务）压缩 |
+
+即：**固定成本 \$9/月 + API 按量**，替代旧文档"\$0/月"的不实承诺。
+
+### **风险与规避**
+
+- **超配额**：Workers 超限返回 Error 1027 → hermes 回退直调 Space 兜底；R2 操作数留 10 倍余量。
+- **Supabase 暂停**：系统自身 cron 保证每周有写入；若被暂停，到 Supabase Dashboard 一键 Restore 即可。
+- **单点**：Worker 挂了自动回退直调；hermes 挂了 start.sh 5 秒自愈 + 外部监测告警。
+- **合规**：多账号薅羊毛路线已废弃，单 PRO 账号无风控隐患；保活间隔随机化。
+- **数据安全**：全 HTTPS；预签名 URL 短时有效；敏感写操作在 hermes 路由层加审批开关。
+
+---
+
+## **第十一部分：运维排障速查**
+
+| 症状 | 排查 |
+|------|------|
+| Space 构建失败 | README frontmatter `sdk: docker` / `app_port: 7860`；Dockerfile 是否建 UID 1000 用户 |
+| `from storage import` 报错 | 忘了跑 `sync-spaces.sh` 或漏配 `PYTHONPATH` |
+| LangGraph 连接冲突 | `SUPABASE_DB_URI` 误用 5432 session pooler，改 6543 |
+| 下游 502 | 先 `GET /health`；休眠则等冷启动；确认调用超时 ≥90s |
+| 401 | 各组件 `NEXUS_API_KEY` 不一致，或缺 `Bearer ` 前缀 |
+| Worker 1027 | 当日 10 万请求用尽，hermes 应已自动回退直调 |
+| Supabase 连不上 | 检查项目是否因 7 天不活跃被暂停，Dashboard 恢复 |
+
+---
+
+## **第十二部分：附录——Hermes Agent 真实命令速查（核查版）**
+
+旧聊天记录中的命令大半是错的。以下是官方文档证实存在的命令，在 Space 内或本地使用：
+
+- 聊天：`hermes chat`（交互）、`hermes chat -q "..."`（单次）、`hermes -z "..."`（脚本化纯输出，适合 cron 与管道）
+- 模型：`hermes model`（终端内配置 provider/密钥）；会话内 `/model` 只能切换已配置的模型
+- 技能：`hermes skills browse / search / install <源/路径或URL> / list / update / publish / tap`；会话内由 agent 自建 skill，`hermes curator run` 后台修剪合并
+- 定时任务：`hermes cron create "every 1h" "任务prompt" --skill <名>`，另有 `list/edit/pause/resume/remove/status`；无异常时用 `[SILENT]` 静默模式
+- 消息网关：`hermes gateway setup` + `hermes gateway run`（Docker/WSL 用 run，start 是 systemd 服务）——接 Telegram/Discord/Slack/WhatsApp，**不提供 HTTP API、无 --port**
+- 检查点：`hermes checkpoints status/prune`，会话内 `/rollback` 回滚文件
+- 档案：`hermes backup` / `hermes import <zip>`；多实例 `hermes profile create work --clone`
+- Web 控制台：`hermes dashboard --port 9119`（需先 `uv pip install -e ".[web]"`，这是本地管理台，非任务 API）
+- 记忆与人格：`SOUL.md`、`MEMORY.md`、`USER.md`、`AGENTS.md` 自动注入，可用 `--ignore-rules` 跳过 [Hermes Cron 文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)
+
+---
+
+## **文档结束语**
+
+本手册基于 humes.txt 的原始构想、《Nexus AI系统低成本部署方案》的初稿框架与 HANDBOOK.md 的工程化雏形，经 2026-07-27 全量官方文档核查后修正重写。接手建议路径：先读第一部分的修正记录建立正确认知 → 按第三部分核对平台边界 → 照第九部分逐步部署并断点验证 → 需要改功能时回查第五至八部分。若未来平台规则再变（HF 套餐、免费额度、模型 ID 均为高频变动项），请先查官方文档更新对应章节，不要硬编码旧假设。

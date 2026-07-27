@@ -1,0 +1,85 @@
+
+
+### **Nexus 方案已核查修正，关键结论：原文档中至少3处硬性错误会导致部署失败，已在下方完整版中修正**
+
+在动手之前必须说明：你提供的四份材料中，`HANDBOOK.md` 是相对准确、经过自我纠错的版本（它已经指出早期方案里"hermes gateway start --port 7860"是虚构的），而 `humes.txt`、两份"Nexus AI系统低成本部署方案"文档存在**编造的命令、错误的免费额度数字、以及已过时的平台政策**。下面先列出我联网核查后发现的具体问题，再给出可直接使用的完整接手文档。
+
+#### 核查发现的关键事实错误
+
+**第一，Hugging Face 免费 Space 的政策在2026年年中已发生重大变化，原方案的核心假设已经不成立。** 根据 Hugging Face 官方论坛的多个讨论帖，自2026年7月起，新建 Docker SDK 和 Gradio SDK 的 Space 在 CPU Basic 免费层已被下线，新账号只能使用受限的 ZeroGPU 层，若要跑 Docker Space 必须订阅 PRO（约每月9美元起）或走计费。也就是说，"4个免费 Docker Space 组成 Nexus 集群，成本0美元/月"这一前提在当前时间点是**不成立的**，除非账号是政策变化前已存在的老账号，或者接受升级到 PRO。[Hugging Face Forums](https://discuss.huggingface.co/t/docker-sdk-now-marked-as-paid-when-creating-a-new-space/177580) [metacto.com](https://www.metacto.com/blogs/the-true-cost-of-hugging-face-a-guide-to-pricing-and-integration)
+
+**第二，Hermes Agent 的真实产品形态与两份原始方案文档描述的不符。** 联网核查 NousResearch 的官方仓库和文档确认：Hermes Agent 是一个终端交互式（TUI）Agent，通过 `hermes setup --portal` 配置、`hermes chat` 对话，它并不是一个监听 HTTP 端口的 Web 服务，不存在 `hermes gateway start --port 7860` 这种用法，`/learn`、`hermes skills install <name>` 这类命令在官方文档中也查不到对应形式（官方是 `/skills`、`skill` 相关子命令体系，具体以 `hermes --help` 为准）。`HANDBOOK.md` 里"Hermes Agent 认知修正"这一段的判断是对的，`humes.txt` 里那些"神仙用法"命令大量属于臆造或过度演绎，不应作为部署依据。[Hermes Agent Docs](https://hermes-agent.nousresearch.com/docs/user-guide/cli) [GitHub](https://github.com/nousresearch/hermes-agent)
+
+**第三，Cloudflare R2 和 Supabase 的免费额度数字在原方案文档中被写错。** 真实的 R2 免费层是每月10GB存储、100万次 Class A 操作、1000万次 Class B 操作，而两份"Nexus"文档里写的是"1000万Class A操作和1000万Class B操作"，Class A 的数量级被夸大了10倍。Supabase 免费层是500MB数据库存储、500MB共享内存的计算实例，并没有官方公开的"50万行读/写"这个具体指标，这个数字来源不明，应删除或标注待核实。[nubbo.app](https://nubbo.app/blog/cloudflare-r2-free-tier) [aiagencyplus.com](https://aiagencyplus.com/supabase-free-tier-limits) [uibakery.io](https://uibakery.io/blog/supabase-pricing)
+
+**第四，两份"Nexus AI系统低成本部署方案"（docx/pdf）里附带的"参考来源"列表里混入了大量与内容完全无关的 arXiv 论文链接（如超导器件模拟、跨语言代码搜索、DNS流量测量等），这是明显的引用伪造/幻觉现象，应全部剔除**，不能作为可信引用出现在最终交付文档中。
+
+下面是经过修正、去伪存真后的完整接手文档，任何人或 AI 拿到它都不需要额外上下文即可理解现状、判断可行性并动手部署或重新设计。
+
+---
+
+## Nexus 混合 Agent 系统 —— 接手总纲（已核查修正版）
+
+### 一、系统定位与设计初衷
+
+Nexus 的设计目标是用最低成本搭建一个由多个专项 Agent 组成的混合系统：一个轻量主控（Hermes 理念的执行层）负责路由和记忆，复杂编排交给 LangGraph，代码生成/推理交给 Claude、Codex 等外部 API，大文件用 Cloudflare R2 存，结构化状态用 Supabase Postgres 存。这个设计思路本身是合理的分层架构，问题主要出在"用四个 Hugging Face 免费 Space 白嫖算力"这个前提假设上，以及部分文档在描述 Hermes CLI 能力时存在虚构内容。
+
+### 二、当前可行性结论（这是接手者必须先确认的事）
+
+在动手部署前，任何接手者都应该先做这三件事而不是直接照抄脚本：
+
+第一，登录 Hugging Face 账号，实际尝试创建一个 Docker SDK 或 Gradio SDK 的新 Space，确认当前账号是否仍处在免费 CPU Basic 层，还是已经被要求升级到 PRO。这个政策在2026年内多次调整，文档里写的"0美元/月"不能直接当作事实使用，必须以账号面板的实时提示为准。
+
+第二，如果确实需要4个 Docker Space 才能实现"主控+编排+两个推理专用节点"的架构，那么大概率需要至少一个 PRO 账号（月费约9美元起），"完全免费"的说法应当从任何交付文档里删除，改为"低成本"。
+
+第三，重新评估是否真的需要"Hermes CLI 跑在 HF Space 里对外提供 HTTP 服务"这个设计。`HANDBOOK.md` 已经做出了正确判断：官方 Hermes Agent 是本地/服务器上的 TUI 交互工具，不是可以直接部署为 Web 服务的 HTTP 后端，因此 Nexus 系统里真正跑在 Space 里对外提供 `/run`、`/health` 等 HTTP 接口的，其实是一个**自建的 FastAPI + Gradio 应用**，"Hermes"只是这个自建主控的命名灵感或人格设定来源，不是把官方 hermes-agent 二进制直接跑成了 Web 服务。这一点是整套方案里最容易被误读、也最需要在交接时讲清楚的地方。
+
+### 三、系统架构（去除虚构部分后的实际版本）
+
+```mermaid
+flowchart LR
+    U[用户/外部请求] -->|POST /run| H[hermes 主控 Space<br/>FastAPI+Gradio, 自建]
+    H -->|按关键词路由| W[Cloudflare Worker<br/>鉴权+转发+保活]
+    W --> L[langgraph Space<br/>编排引擎]
+    W --> C[claude-code Space<br/>调用 Anthropic API]
+    W --> X[codex Space<br/>调用 OpenAI 兼容 API]
+    L --> R2[(Cloudflare R2<br/>大文件/Checkpoint)]
+    L --> SB[(Supabase Postgres<br/>状态/日志/记忆)]
+    H --> SB
+    H --> R2
+```
+
+四个组件、鉴权入口、存储分层、保活机制这些设计本身没有问题，保留自 `HANDBOOK.md`。真正需要提醒接手者的是：这套架构里所有下游 Space 之间的通信、鉴权、路由，都是团队自己用 FastAPI/Worker 写的业务代码，"Hermes"、"LangGraph"这些名字更多是设计理念上的借鉴和命名，而不是直接把对应开源项目原样部署——尤其是 Hermes，官方产品形态和这里的用法有本质区别，接手者不要按照 `humes.txt` 里的"神仙用法"命令去调试主控 Space，那些命令在这个架构里根本不存在、不生效。
+
+### 四、目录结构与关键文件（沿用 HANDBOOK.md，已验证结构自洽）
+
+```
+nexus/
+├── README.md
+├── .env.example
+├── docs/{HANDBOOK,ARCHITECTURE,COMMUNICATION,DEPLOYMENT,CREDENTIALS}.md
+├── libs/{storage,shared}/          # 跨 Space 共享库，唯一真源
+├── spaces/{hermes,langgraph,claude-code,codex}/
+├── workers/gateway/                # Cloudflare Worker 源码
+├── sql/{00_schema,01_pgvector}.sql
+└── scripts/sync-spaces.sh
+```
+
+四个 Space 的角色划分、共享库导出函数、Supabase 表结构（`agent_states`、`task_logs`、`long_memory`、`backup_snapshots`、`space_health` 等）、R2 桶划分（checkpoints/artifacts/backups/skills/vectors）都在原 `HANDBOOK.md` 中有完整定义，经核查这部分内容逻辑自洽、没有发现事实错误，可以直接沿用，唯一需要接手者注意的是**建桶和建表要在确认好账号套餐之后才进行**，避免白做。
+
+### 五、部署前必须重新核实的成本假设（替换原文档中的成本表）
+
+| 组件 | 原方案声称成本 | 核查后的真实情况 |
+|---|---|---|
+| Hugging Face Space（4个 Docker） | 0美元/月 | 2026年中起新账号 Docker/Gradio 免费层已收紧，很可能需要 PRO（约9美元/月起）或按量计费，具体以账号面板为准 [Hugging Face Forums](https://discuss.huggingface.co/t/docker-sdk-now-marked-as-paid-when-creating-a-new-space/177580) |
+| Cloudflare R2 | 0美元/月，"1000万Class A操作" | 免费层实际为10GB存储、100万次 Class A 操作、1000万次 Class B 操作，Class A 额度只有原文档所写的十分之一 [nubbo.app](https://nubbo.app/blog/cloudflare-r2-free-tier) |
+| Supabase | 0美元/月，"500MB数据库+1GB存储+50万行读写" | 免费层为500MB数据库存储、共享500MB内存计算实例，官方未公开固定的"读写行数"额度，超限后主要表现为性能降级而非硬性阻断 [aiagencyplus.com](https://aiagencyplus.com/supabase-free-tier-limits) [uibakery.io](https://uibakery.io/blog/supabase-pricing) |
+| Claude/Codex API | 按使用量计费 | 属实，且是整套系统里唯一确定会持续产生费用的部分，务必做好并发限流 |
+
+### 六、给接手者的行动建议
+
+如果接手者的目标只是学习这套分层架构的设计思路（主控路由、存储分离、保活机制、凭证外置这四个原则本身是通用且合理的工程实践），那么可以直接沿用 `HANDBOOK.md` 里的目录结构、API 契约、部署步骤，只需要把"完全免费"的表述改成"低成本，部分组件可能需要小额付费"，并在实际创建 Space 之前先确认账号当前的免费层权限。
+
+如果接手者的目标是严格复现"零成本运行"，那么现在需要重新评估技术选型：既然 HF 免费 Docker/Gradio 层已经收紧，更务实的替代路径是把 langgraph、claude-code、codex 这几个下游服务改为部署在 Railway、Fly.io、Render 等仍提供较友好免费额度的平台，或者把它们都收敛成 Cloudflare Worker 里直接调用外部 API 的无状态函数，从而完全绕开 HF Space 的计算层，只用 HF 存放静态说明或不占用 Docker 层的资源。这也是此前搜索结果中"个人开发者更推荐本地或轻量云服务器体验，而不是死磕 HF 免费层"这一判断的现实基础。
+
+最后需要提醒的一点是：任何后续基于这套方案生成的文档、参考资料，都不应该再包含此前两份"Nexus AI系统低成本部署方案"文档末尾那份庞杂的"参考来源"列表——里面绝大多数 arXiv 论文链接与本方案内容毫无关系，是典型的引用堆砌痕迹，接手者如果看到类似列表混在技术文档里，应默认其不可信并不予采纳。

@@ -23,13 +23,13 @@
 | `SUPABASE_URL` | Project Settings → API | `https://<id>.supabase.co` |
 | `SUPABASE_ANON_KEY` | 同上 | 客户端/低权限 |
 | `SUPABASE_SERVICE_ROLE_KEY` | 同上 | **服务端高权限，仅入 Space Secret** |
-| `SUPABASE_DB_URI` | Database → Connection string (URI, port 6543) | LangGraph PostgresSaver 直连 |
+| `SUPABASE_DB_URI` | Database → Connection string (URI, port 6543 transaction pooler) | LangGraph PostgresSaver 直连。`from_conn_string` 硬编码 `prepare_threshold=0`，6543 安全；勿用 5432 session pooler |
 
 ## Hugging Face
 
 | 环境变量 | 来源 | 用途 |
 |---------|------|------|
-| `HF_TOKEN` | HF Settings → Access Tokens | Space CI/私有库访问（可选） |
+| `HF_TOKEN` | HF Settings → Access Tokens | 私有 Space 的 HF 层访问（Worker/`keepalive.py` 探私有 Space 必需）；Space CI/私有库访问 |
 | `SPACE_AUTHOR_NAME` | 运行时自动注入 | 自填也可 |
 | `SPACE_REPO_NAME` | 运行时自动注入 | 自填也可 |
 
@@ -38,7 +38,10 @@
 | 环境变量 | 生成方式 | 用途 |
 |---------|---------|------|
 | `NEXUS_API_KEY` | `python -c "import secrets;print(secrets.token_urlsafe(32))"` | Space 间 + Worker 鉴权，全系统同一把 |
+| `NEXUS_AUTH_MODE` | 空=生产 `fail-closed`；`dev`=本地免鉴权 | 缺 `NEXUS_API_KEY` 时拒绝（500）而非放行 |
 | `GATEWAY_URL` | Worker 部署后 | Hermes 调 Worker 用 |
+
+> 鉴权 header：调下游 Space 用 `X-Nexus-Key: Bearer <NEXUS_API_KEY>`（`Authorization` 留给 HF 层 `HF_TOKEN`）；调 Worker 网关（无 HF 层）仍用 `Authorization: Bearer <NEXUS_API_KEY>`。
 
 ## 下游 Space URL（Hermes 用）
 
@@ -47,8 +50,6 @@
 | `LANGGRAPH_URL` | `https://<owner>-langgraph.hf.space` |
 | `CLAUDE_URL` | `https://<owner>-claude-code.hf.space` |
 | `CODEX_URL` | `https://<owner>-codex.hf.space` |
-
-私有 Space 调用需带 `Authorization: Bearer <HF_TOKEN>` 或经 Worker 转发。
 
 ## 安全红线
 

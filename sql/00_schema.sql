@@ -61,3 +61,39 @@ alter table agent_states enable row level security;
 alter table task_logs   enable row level security;
 alter table long_memory enable row level security;
 alter table task_queue  enable row level security;
+
+-- 5. Skills 索引（借鉴 Hermes Skills 备份思路）-----------------------
+-- 记录可复用 Skill 的元数据；Skill 内容本身存 R2（nexus-skills 桶）。
+create table if not exists skills_index (
+    skill_name   text primary key,
+    description  text,
+    source       text,            -- hermes-auto / manual 等
+    r2_key       text,            -- 对应 R2 对象 key
+    usage_count  integer   not null default 0,
+    last_used    timestamptz
+);
+create index if not exists skills_index_last_used_idx on skills_index (last_used desc);
+
+-- 6. R2 备份快照登记（persist_to_r2.py 写入的元数据）------------------
+create table if not exists backup_snapshots (
+    id          bigserial primary key,
+    table_name  text not null,
+    r2_key      text not null,
+    row_count   integer,
+    created_at  timestamptz not null default now()
+);
+create index if not exists backup_snapshots_table_idx on backup_snapshots (table_name, created_at desc);
+
+-- 7. Space 健康快照（保活探测结果留痕）-------------------------------
+create table if not exists space_health (
+    id          bigserial primary key,
+    space       text not null,        -- hermes/langgraph/claude/codex/gateway
+    status      text not null,        -- ok / down
+    detail      text,
+    created_at  timestamptz not null default now()
+);
+create index if not exists space_health_space_idx on space_health (space, created_at desc);
+
+alter table skills_index     enable row level security;
+alter table backup_snapshots enable row level security;
+alter table space_health     enable row level security;

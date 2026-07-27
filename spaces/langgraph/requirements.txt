@@ -5,4 +5,8 @@ supabase==2.13.0
 boto3==1.36.0
 langgraph==0.2.74
 langgraph-checkpoint-postgres==2.0.10
+# from_conn_string 硬编码 prepare_threshold=0，6543 transaction pooler 安全（见 libs/shared/checkpointer.py）
+# 显式带 binary 避免 HF Docker 无编译器时纯 Python 路径慢且可能缺 C 扩展
+psycopg[binary]>=3.2.0,<4.0.0
+psycopg-pool>=3.2.0,<4.0.0
 langchain-core==0.3.40

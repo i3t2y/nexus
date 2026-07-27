@@ -14,7 +14,7 @@
 
 | Space | 角色 | SDK | 状态 |
 |-------|------|-----|------|
-| `hermes` | 主控大脑，常驻，路由分发 | Gradio (ZeroGPU) / Docker | 模板 |
+| `hermes` | 主控大脑：Gradio Dashboard + FastAPI 路由（监听7860）+ 双写/保活/自愈后台 | Docker | 模板 |
 | `langgraph` | 复杂工作流编排，含 Checkpointer | Docker | 模板 |
 | `claude-code` | 复杂推理、代码生成 | Docker | 模板 |
 | `codex` | 快速编码、补全 | Docker | 模板 |
@@ -75,6 +75,24 @@ HF Space 出站仅 80 / 443 / 8080。R2(S3 API)、Supabase(HTTPS) 均走 443，�
 
 Space 内 `/data` 持久存储**已下线**。跨重启持久必须用 R2 / Supabase，不依赖本地磁盘。
 
+### 鉴权 header 冲突（私有 Space 必读）
+
+私有 HF Space 的 HF Gateway 用 `Authorization: Bearer <HF_TOKEN>` 鉴权**这层**。若 Worker/直调也用 `Authorization` 传 `NEXUS_API_KEY`，会**覆盖** HF 层 token → HF 层 401，请求进不到 Space app。
+
+解法：下游 Space 鉴权改用自定义 header **`X-Nexus-Key: Bearer <NEXUS_API_KEY>`**（各 Space `auth()` 读它，回退 `Authorization` 兼容）；`Authorization` 留给 HF 层（私有 Space 注入 `HF_TOKEN`）。只在调独立的 Cloudflare Worker 网关层（无 HF 层）时，入站鉴权仍用 `Authorization`。
+
+### auth fail-closed
+
+`auth()` 缺 `NEXUS_API_KEY` 时拒绝（500 配置错误），不"忘配即放行"。本地免鉴权显式设 `NEXUS_AUTH_MODE=dev`。模板默认走生产语义，降低误留 open 的风险。
+
+### Hermes Agent ≠ HTTP 服务（查证修正）
+
+Nous Research 开源 Hermes Agent（`github.com/NousResearch/hermes-agent`，`curl install.sh | bash` 安装）是 **TUI/CLI 交互式 agent**，基于 `uv` 装在 `~/.hermes/`。`hermes gateway start` 指**消息平台网关**（Telegram/Discord 等），**不监听 HTTP 端口**，**无 `--port` 参数**。
+
+故本方案 **不依赖原生 hermes CLI 作 Space 的 HTTP 主控**——HF Space 要求单进程监听 7860。Hermes Space 用自建 **Gradio Dashboard + FastAPI 路由** 同进程实现（监听 7860）。原生 hermes CLI 可选作**本地增强层**（自学习 Skills 等），非架构硬依赖。
+
+> 注：部分参考文档提到 `hermes gateway start --port 7860`、`/learn`、`/goal`、`hermes skills install <name>`，官方 README（2026-07 查证）**均无**。前端方案不照搬，避免采坑。
+
 ## 技术栈版本锚点
 
 | 组件 | 库 | 安装 |
@@ -85,8 +103,38 @@ Space 内 `/data` 持久存储**已下线**。跨重启持久必须用 R2 / Supa
 | HTTP 调用 | `httpx` | `pip install httpx` |
 
 API 已对照官方文档（2026-07）：
-- `AsyncPostgresSaver.from_conn_string(uri)` + `await checkpointer.setup()`
+- `AsyncPostgresSaver.from_conn_string(uri)` + `await checkpointer.setup()`。底层 **psycopg3**（非 asyncpg），`from_conn_string` 硬编码 `prepare_threshold=0`（禁 server-side prepared statement）+ `autocommit=True` + `row_factory=dict_row`，故 Supabase 6543 transaction pooler 直连安全，无需额外兜底。
 - `supabase.create_client(url, key, options=None)`，`upsert(json, on_conflict=, ignore_duplicates=)`
+
+## 增强机制（Hermes Space）
+
+借自 HermesFace / HuggingMes 两项目的最高价值点，已改成 R2+Supabase 版集成进 Hermes Space：
+
+| 点 | 来源 | 实现 | 文件 |
+|----|------|------|------|
+| Cloudflare Keep-Alive | HuggingMes | Worker `/probe` + cron triggers；Hermes 端 `keepalive.py`（随机延时避免规律节奏） | `workers/gateway/`、`spaces/hermes/scripts/keepalive.py` |
+| Supabase 自身保活 | 查证补充 | `keepalive.py` 每轮 `space_health` insert = 轻量写 DB，防免费档 1 周不活跃自动暂停（查证 pricing.ts） | `spaces/hermes/scripts/keepalive.py` |
+| Ephemeral Package Replay | HuggingMes | 重启重装历史 pip 包 | `spaces/hermes/scripts/replay_packages.py`、`start.sh` |
+| 自愈 Gateway | HuggingMes | `start.sh` while 循环重启崩溃 app | `spaces/hermes/start.sh` |
+| 原子备份/恢复 | HermesFace | R2 写 tmp→copy 原子替换（替代 HF Dataset 原子写） | `spaces/hermes/scripts/persist_to_r2.py` |
+| Supabase→R2 双写同步 | 两者 | 周期把 Supabase 表快照写 R2（5分钟） | 同上 |
+| Dashboard 文件管理 | 两者 | Gradio Tab：R2 文件 上传/读入/编辑/保存/删除/刷新 | `spaces/hermes/app/main.py` |
+
+Hermes Space 目录：
+```
+spaces/hermes/
+├── README.md  Dockerfile  requirements.txt  start.sh
+├── app/main.py        # Gradio Dashboard + FastAPI 路由（同进程7860）
+├── libs/              # 同步的共享库（storage/gateway）
+└── scripts/
+    ├── persist_to_r2.py      # Supabase→R2 双写快照（原子覆盖）
+    ├── replay_packages.py    # 重启重装包
+    └── keepalive.py          # 下游 Space 保活探测
+```
+
+保活策略（用户已确认外部监测网站稳定可用）：
+- **Hermes/下游 Space**：主=外部监测网站 ping `/health`（已验证稳定）；辅=Worker cron + Hermes `keepalive.py` 内部互探，间隔随机化避免固定周期形成规律节奏。
+- **Supabase**：免费档 1 周不活跃自动暂停（仅停 compute，数据不丢可恢复）。`keepalive.py` 每轮写 `space_health` 表即刷"上次活动"。
 
 ## 演进路径
 

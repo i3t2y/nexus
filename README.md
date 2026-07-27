@@ -45,8 +45,21 @@ bash scripts/sync-spaces.sh
 # 5. 端到端：curl POST <hermes_url>/run -d '{"prompt":"测试规划"}'
 ```
 
+## 增强机制（Hermes Space）
+
+借自 HermesFace / HuggingMes 两项目，已转 R2+Supabase 版集成进 Hermes Space：
+
+- **保活**：主靠外部监测网站 ping `/health`（已验稳定）；辅是 Worker cron + `keepalive.py` 内部互探，间隔随机化防风控特征。
+- **自愈**：`start.sh` while 循环重启崩溃的 app。
+- **Ephemeral Package Replay**：重启重装历史 pip 包（`replay_packages.py`）。
+- **原子备份/恢复**：Supabase→R2 双写快照（`persist_to_r2.py`），先写 tmp 再 copy 原子覆盖，登记 `backup_snapshots` 表。
+- **Dashboard 文件管理**：Gradio Tab 上传/读取/编辑/保存/删除 R2 文件（`spaces/hermes/app/main.py`）。
+
+详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)「增强机制」段。
+
 ## 关键文档
 
+- **完整接手手册（零上下文即懂）** [`docs/HANDBOOK.md`](docs/HANDBOOK.md) — 项目全貌+部署+API+凭证+运维一体
 - **先读** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 总览 + 付费墙约束
 - 通信方案 [`docs/COMMUNICATION.md`](docs/COMMUNICATION.md) — Worker 网关为主、直调为辅
 - 部署顺序 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)

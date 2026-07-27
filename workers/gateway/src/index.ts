@@ -23,6 +23,13 @@ export default {
       return json({ status: "ok", service: "nexus-gateway" });
     }
 
+    // /probe ：探测全部下游 Space /health（保活核心）。需鉴权。
+    if (url.pathname === "/probe") {
+      const err = requireAuth(req, env);
+      if (err) return err;
+      return json(await probeAllSpaces(env));
+    }
+
     if (url.pathname !== "/route") {
       return json({ error: "not found" }, 404);
     }
@@ -31,15 +38,10 @@ export default {
     }
 
     // 鉴权
-    const auth = req.headers.get("authorization") ?? "";
-    if (!env.NEXUS_API_KEY) {
-      return json({ error: "NEXUS_API_KEY not set on worker" }, 500);
-    }
-    if (auth !== `Bearer ${env.NEXUS_API_KEY}`) {
-      return json({ error: "unauthorized" }, 401);
-    }
+    const err = requireAuth(req, env);
+    if (err) return err;
 
-    const { space, path, body }: RouteBody = await req.json().catch(() => ({} as RouteBody));
+    const { space, path, body } = (await req.json().catch(() => ({}))) as Partial<RouteBody>;
     if (!space || !path || !SPACE_REPOS[space]) {
       return json({ error: "invalid space/path" }, 400);
     }
@@ -52,12 +54,18 @@ export default {
     const target = `${base}${path}`;
 
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        // 用自定义 header 传 NEXUS_API_KEY，下游 app auth() 读 X-Nexus-Key。
+        // Authorization 留给 HF 层：私有 Space 的 HF Gateway 用 Bearer HF_TOKEN 鉴权，
+        // 若也占 Authorization 会冲突（HF 层 401，进不到 app）。
+        "X-Nexus-Key": `Bearer ${env.NEXUS_API_KEY}`,
+      };
+      // 私有 Space：HF 层需 Bearer HF_TOKEN，否则 HF Gateway 401。
+      if (env.HF_TOKEN) headers["Authorization"] = `Bearer ${env.HF_TOKEN}`;
       const upstream = await fetch(target, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${env.NEXUS_API_KEY}`,
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(body ?? {}),
         signal: AbortSignal.timeout(60_000),
       });
@@ -70,6 +78,14 @@ export default {
       return json({ error: `downstream ${space} unreachable`, detail: String(e) }, 502);
     }
   },
+
+  // Cron 触发器：周期保活，唤醒休眠的免费 Space。
+  // 在 wrangler.toml 配 [[triggers]] crons。
+  async scheduled(_event: ScheduledEvent, env: Record<string, string>, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(probeAllSpaces(env).then((r) => {
+      console.log("[keepalive]", JSON.stringify(r));
+    }));
+  },
 };
 
 function json(obj: unknown, status = 200): Response {
@@ -77,4 +93,42 @@ function json(obj: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** 鉴权校验，返回 Response 则表示失败需直接返回。 */
+function requireAuth(req: Request, env: Record<string, string>): Response | null {
+  if (!env.NEXUS_API_KEY) return json({ error: "NEXUS_API_KEY not set on worker" }, 500);
+  const auth = req.headers.get("authorization") ?? "";
+  if (auth !== `Bearer ${env.NEXUS_API_KEY}`) return json({ error: "unauthorized" }, 401);
+  return null;
+}
+
+function spaceBase(env: Record<string, string>, space: string): string {
+  const explicit = env[`${space.toUpperCase()}_URL`];
+  return explicit || `https://${env.SPACE_OWNER}-${SPACE_REPOS[space]}.hf.space`;
+}
+
+/** 探测所有下游 Space 的 /health。用了 hermes（也探测自身主控）。 */
+async function probeAllSpaces(env: Record<string, string>): Promise<Record<string, string>> {
+  const spaces = ["hermes", "langgraph", "claude", "codex"];
+  const results: Record<string, string> = {};
+  await Promise.all(
+    spaces.map(async (s) => {
+      const owner = env.SPACE_OWNER;
+      const repo = s === "hermes" ? "hermes" : SPACE_REPOS[s];
+      const base = env[`${s.toUpperCase()}_URL`] || `https://${owner}-${repo}.hf.space`;
+      try {
+        const headers: Record<string, string> = { "X-Nexus-Key": `Bearer ${env.NEXUS_API_KEY}` };
+        if (env.HF_TOKEN) headers["Authorization"] = `Bearer ${env.HF_TOKEN}`;
+        const r = await fetch(`${base}/health`, {
+          headers,
+          signal: AbortSignal.timeout(15_000),
+        });
+        results[s] = `ok:${r.status}`;
+      } catch (e) {
+        results[s] = `down:${String(e).slice(0, 60)}`;
+      }
+    }),
+  );
+  return results;
 }
