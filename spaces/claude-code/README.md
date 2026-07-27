@@ -28,4 +28,4 @@ tags:
 ## Secrets
 
 `ANTHROPIC_API_KEY` + R2/Supabase 套 + `NEXUS_API_KEY`。
-模型默认 `claude-3-5-sonnet` 或按 `docs/ARCHITECTURE.md` 锚定最新。
+模型默认 `claude-sonnet-5`（Claude 5 族），按 `CLAUDE_MODEL` 覆盖。

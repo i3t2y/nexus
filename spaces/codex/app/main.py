@@ -15,7 +15,8 @@ app = FastAPI(title="Nexus Codex")
 _API_KEY = os.getenv("NEXUS_API_KEY", "")
 _OPENAI = os.getenv("OPENAI_API_KEY", "")
 _OPENAI_BASE = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-# Codex / 兼容模型，部署时按实际改
+# Codex / 兼容小模型（gpt-4o-mini 为 OpenAI 现役小模型，2026-07 查证仍在服务）；
+# 部署时按账号接入的模型覆盖
 _MODEL = os.getenv("CODEX_MODEL", "gpt-4o-mini")
 
 

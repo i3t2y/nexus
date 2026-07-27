@@ -70,7 +70,7 @@ def _supa():
 
 
 def _sleep_rand() -> int:
-    # 随机延时，避免固定周期被风控特征识别
+    # 随机抖动间隔，避免固定周期形成可观测规律
     return _BASE + random.randint(-_JITTER, _JITTER)
 
 

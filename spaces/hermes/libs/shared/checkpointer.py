@@ -35,11 +35,20 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 
 def db_uri() -> str:
-    """Supabase 直连串（port 6543 transaction pooler，见模块 docstring 为何安全）。"""
+    """Supabase 直连串（port 6543 transaction pooler，见模块 docstring 为何安全）。
+
+    额外强制 `sslmode=require`：Supabase pooler 实际已强制 TLS（pgBouncer），
+    这里显式补上是纵深防御 + fail-closed（万一 URI 指非加密端点直接报错而非裸传）。
+    若 URI 已带 sslmode 参数则尊重原值，不覆盖。
+    """
     uri = os.getenv("SUPABASE_DB_URI")
     if not uri:
         raise RuntimeError("SUPABASE_DB_URI 未设置（需 Supabase connection string）")
-    return uri
+    # 已含 query 用 & 追加，否则用 ? 起头
+    if "sslmode=" in uri:
+        return uri  # 已显式指定，尊重部署方意图
+    sep = "&" if "?" in uri else "?"
+    return f"{uri}{sep}sslmode=require"
 
 
 @asynccontextmanager

@@ -26,7 +26,7 @@
 | 约束 | 事实 | 本方案如何应对 |
 |------|------|--------------|
 | **HF Docker 付费墙** | 自 2024 起 Docker SDK Space 跑 compute 需 PRO/Team 套餐；个人免费号仅 2 个 ZeroGPU Gradio Space + CPU Basic 免费 | 4 个 Space 全用 Docker SDK。部署前确认账号有付费套餐，否则 langgraph/claude/codex 三个 Docker Space 创建不了。hermes 可改 Gradio + ZeroGPU 跑免费层 |
-| **免费 Space 会休眠** | CPU Basic / ZeroGPU 闲置即睡，首调冷启动数十秒 | 外部监测网站定期 ping `/health`（主，已验证稳定）；Worker cron + hermes `keepalive.py` 内部互探（辅）。间隔随机化防风控特征 |
+| **免费 Space 会休眠** | CPU Basic / ZeroGPU 闲置即睡，首调冷启动数十秒 | 外部监测网站定期 ping `/health`（主，已验证稳定）；Worker cron + hermes `keepalive.py` 内部互探（辅）。间隔随机化避免固定周期 |
 | **HF 出站端口限制** | 仅 80/443/8080 放行 | R2(S3 API 443)、Supabase(HTTPS 443) 均无碍 |
 | **`/data` 已下线** | Space 内持久存储已废 | 跨重启持久必须走 R2/Supabase，不依赖本地磁盘 |
 | **单进程监听 7860** | HF Space 要求单进程监听 7860 | hermes 用 `gr.mount_gradio_app(fastapi_app, demo, "/")` 把 Gradio Dashboard 挂到 FastAPI 同端口；FastAPI 路由 API + Gradio UI 一个进程 |
@@ -124,11 +124,14 @@ Cloudflare Worker，单文件 `src/index.ts`：
 | 方法 | 路径 | body | return | 说明 |
 |------|------|------|--------|------|
 | GET | `/health` | — | `{status,space}` | 保活/唤醒 |
-| POST | `/run` | `{prompt, force_space?}` | `{task_id, space, result}` | 主入口：路由→下游→回传 |
-| GET | `/state/{thread_id}` | — | state(未实现桩) | 查状态 |
+| POST | `/run` | `{prompt, force_space?}` | `{task_id, space, result}` | 主入口（同步）：路由→下游→回传 |
+| POST | `/enqueue` | `{prompt, force_space?}` + header `Idempotency-Key?` | `{enqueued, task_id?, space}` | 异步入队：带 `Idempotency-Key` 实现幂等（同键重复不重复执行） |
+| POST | `/dequeue` | `?space?` | `{task_id,space,status,result}` 或 `{idle:true}` | 消费一条 queued→调下游→完成（单消费者模板） |
+| GET | `/state/{thread_id}` | — | `{thread_id, state}` | 查 agent_states（无则 404） |
+| GET | `/task/{thread_id}` | — | `{task_id,space,status,result}` | 查 task_queue 行（queued/claimed/done/error，无则 404） |
 | UI | `/` | — | Gradio Dashboard | 任务路由 + R2文件管理 + 系统状态 |
 
-路由规则（`main.py` `route()`，可改）：含规划/多步/工作流→langgraph；实现/重构/调试→claude；补全/快速/片段→codex；默认 langgraph。`force_space` 强制目标。
+路由规则（`main.py` `route()`，可改）：含规划/多步/工作流→langgraph；实现/重构/调试→claude；补全/快速/片段→codex；**默认 claude**（普通任务不进工作流编排，需编排时显式 `force_space=langgraph`）。`force_space` 强制目标。
 
 ### 3.2 下游 Space 接口（hermes 调，经 Worker 为主）
 
@@ -164,7 +167,7 @@ call_space 逻辑（`libs/shared/gateway.py`）：有 `GATEWAY_URL` 先经 Worke
 |----|------|--------|
 | **R2**（S3兼容,boto3,region='auto'） | Checkpoint blob、Skills 备份、向量文件、大产物 | >1MB 或二进制 |
 | **Supabase Postgres** | agent_states、task_logs、long_memory、调度队列 + pgvector | 结构化、需查询 |
-| HF Datasets | 临时缓存、必须放 HF 的文件 | 仅兜底，低频读用降风控 |
+| HF Datasets | 临时缓存、必须放 HF 的文件 | 仅兜底，低频读写减少暴露 |
 
 ### 4.2 R2 桶（部署前手动建）
 
@@ -185,7 +188,7 @@ call_space 逻辑（`libs/shared/gateway.py`）：有 `GATEWAY_URL` 先经 Worke
 | `agent_states` | thread_id(jsonb state) | Agent 状态 | `save_state`/`load_state` |
 | `task_logs` | bigserial | 任务日志(thread_id,space_name,action,status) | `log_task` |
 | `long_memory` | key(jsonb value) | 长期记忆 | `remember`/`recall` |
-| `task_queue` | thread_id | 异步任务轮询队列(可选) | (未来) |
+| `task_queue` | thread_id(idempotency_key UNIQUE) | 异步任务队列(queued/claimed/done/error) | `enqueue_task`/`claim_task`/`complete_task` |
 | `skills_index` | skill_name | Skill 元数据(内容存R2 nexus-skills) | (未来) |
 | `backup_snapshots` | bigserial | Supabase→R2 快照登记(table_name,r2_key,row_count) | `persist_to_r2.py` |
 | `space_health` | bigserial | 保活探测留痕(space,status,detail) | `keepalive.py` |
@@ -221,7 +224,7 @@ call_space 逻辑（`libs/shared/gateway.py`）：有 `GATEWAY_URL` 先经 Worke
 | CLAUDE_URL | ✓ | | | | ✓ | Space URL |
 | CODEX_URL | ✓ | | | | ✓ | Space URL |
 | ANTHROPIC_API_KEY | | | ✓ | | | Anthropic |
-| CLAUDE_MODEL | | | ✓ | | | 默认 `claude-3-5-sonnet-20241022` |
+| CLAUDE_MODEL | | | ✓ | | | 默认 `claude-sonnet-5`（Claude 5 族） |
 | OPENAI_API_KEY | | | | ✓ | | OpenAI/兼容 |
 | OPENAI_BASE_URL | | | | ✓ | | 默认 `https://api.openai.com/v1` |
 | CODEX_MODEL | | | | ✓ | | 默认 `gpt-4o-mini` |
@@ -360,7 +363,7 @@ curl -X POST <hermes_url>/run -H "Authorization: Bearer $NEXUS_API_KEY" \
 Anthropic API：`POST https://api.anthropic.com/v1/messages`，header `x-api-key` + `anthropic-version: 2023-06-01`。
 OpenAI 兼容：`POST {OPENAI_BASE_URL}/chat/completions`，header `Authorization: Bearer {OPENAI_API_KEY}`。
 
-> 模型 ID 默认值(代码里) `claude-3-5-sonnet-20241022` / `gpt-4o-mini` 为部署期占位；最新一轮 Claude 模型为 Claude 5 家族：Fable 5=`claude-fable-5`、Opus 5=`claude-opus-5`、Sonnet 5=`claude-sonnet-5`、Haiku 4.5=`claude-haiku-4-5-20251001`。构建 AI 应用默认用最新最强。部署时按需改 env `CLAUDE_MODEL`/`CODEX_MODEL` 覆盖。
+> 模型 ID 默认值(代码里) `claude-sonnet-5` / `gpt-4o-mini`；当前 Claude 主力为 Claude 5 家族：Fable 5=`claude-fable-5`、Opus 5=`claude-opus-5`、Sonnet 5=`claude-sonnet-5`、Haiku 4.5=`claude-haiku-4-5-20251001`。`gpt-4o-mini` 为 OpenAI 现役小模型（2026-07 查证仍在服务）。构建 AI 应用默认用最新最强。部署时按需改 env `CLAUDE_MODEL`/`CODEX_MODEL` 覆盖。
 
 ---
 
@@ -383,7 +386,7 @@ OpenAI 兼容：`POST {OPENAI_BASE_URL}/chat/completions`，header `Authorizatio
 langgraph `node_*` 是桩返回。真实接入在 `node_understand`/`node_plan`/`node_output` 里调 LLM，参考 claude-code `main.py` 的 httpx 调法。
 
 ### 改保活频率
-`wrangler.toml` `crons`（Worker）、`KEEPALIVE_INTERVAL_BASE`/`JITTER`（hermes）。别太高频避免风控。
+`wrangler.toml` `crons`（Worker）、`KEEPALIVE_INTERVAL_BASE`/`JITTER`（hermes）。别太高频，省免费额度、避免无谓探测节奏。
 
 ---
 

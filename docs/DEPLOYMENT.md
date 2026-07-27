@@ -87,9 +87,33 @@ bash scripts/sync-spaces.sh   # 把 libs/ 复制进 spaces/*/libs/
 
 ## 步骤 6：端到端
 
+直接调 hermes（私有 Space，需 HF 层 + app 层双鉴权）：
 ```
-curl -X POST <hermes_url>/run -H "Authorization: Bearer $NEXUS_API_KEY" \
-  -d '{"prompt":"测试：让 langgraph 做一个三步规划"}'
+curl -X POST <hermes_url>/run \
+  -H "Authorization: Bearer $HF_TOKEN" \
+  -H "X-Nexus-Key: Bearer $NEXUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"测试：让 langgraph 做一个三步规划","force_space":"langgraph"}'
+```
+
+或经 Worker 网关（入站用 `Authorization: Bearer NEXUS_API_KEY`，无 HF 冲突）：
+```
+curl -X POST <gateway_url>/route \
+  -H "Authorization: Bearer $NEXUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"space":"claude","path":"/run","body":{"thread_id":"t1","prompt":"hi"}}'
+```
+
+异步 + 幂等（防重复扣费）：
+```
+curl -X POST <hermes_url>/enqueue \
+  -H "Authorization: Bearer $HF_TOKEN" \
+  -H "X-Nexus-Key: Bearer $NEXUS_API_KEY" \
+  -H "Idempotency-Key: order-12345" \
+  -d '{"prompt":"批量审查 5 个 pull request"}'
+# 轮询消费 + 查状态：
+curl -X POST <hermes_url>/dequeue -H "X-Nexus-Key: Bearer $NEXUS_API_KEY" -H "Authorization: Bearer $HF_TOKEN"
+curl <hermes_url>/task/<task_id> -H "X-Nexus-Key: Bearer $NEXUS_API_KEY" -H "Authorization: Bearer $HF_TOKEN"
 ```
 
 期望：返回 task_id，`task_logs` 全链路 done，R2/Supabase 有产物。

@@ -1,8 +1,12 @@
 """Nexus 共享存储包。"""
 from .storage import (
+    claim_task,
+    complete_task,
     dumps,
+    enqueue_task,
     load_checkpoint,
     load_state,
+    load_task,
     log_task,
     presigned_get,
     r2_client,
@@ -25,4 +29,9 @@ __all__ = [
     "remember",
     "recall",
     "dumps",
+    # task_queue 幂等队列
+    "enqueue_task",
+    "claim_task",
+    "complete_task",
+    "load_task",
 ]

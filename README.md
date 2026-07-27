@@ -49,7 +49,7 @@ bash scripts/sync-spaces.sh
 
 借自 HermesFace / HuggingMes 两项目，已转 R2+Supabase 版集成进 Hermes Space：
 
-- **保活**：主靠外部监测网站 ping `/health`（已验稳定）；辅是 Worker cron + `keepalive.py` 内部互探，间隔随机化防风控特征。
+- **保活**：主靠外部监测网站 ping `/health`（已验稳定）；辅是 Worker cron + `keepalive.py` 内部互探，间隔随机化避免固定周期。
 - **自愈**：`start.sh` while 循环重启崩溃的 app。
 - **Ephemeral Package Replay**：重启重装历史 pip 包（`replay_packages.py`）。
 - **原子备份/恢复**：Supabase→R2 双写快照（`persist_to_r2.py`），先写 tmp 再 copy 原子覆盖，登记 `backup_snapshots` 表。

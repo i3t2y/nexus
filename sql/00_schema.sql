@@ -45,14 +45,17 @@ create trigger long_memory_touch before update on long_memory
 for each row execute function touch_updated_at();
 
 -- 4. 异步任务队列（供长任务轮询，可选）--------------------------------
+-- idempotency_key：客户端 Idempotency-Key header 透传，UNIQUE 防重复入队双执行/双扣费
 create table if not exists task_queue (
-    thread_id   text primary key,
-    space       text        not null,
-    payload     jsonb       not null default '{}'::jsonb,
-    status      text        not null default 'queued',  -- queued/claimed/done/error
-    result      jsonb,
-    created_at  timestamptz not null default now(),
-    claimed_at  timestamptz
+    thread_id       text primary key,
+    space           text        not null,
+    payload         jsonb       not null default '{}'::jsonb,
+    status          text        not null default 'queued',  -- queued/claimed/done/error
+    result          jsonb,
+    idempotency_key text        unique,   -- 幂等键；重复请求同一 key 命中已入队，不重复执行
+    created_at      timestamptz not null default now(),
+    claimed_at      timestamptz,
+    constraint task_queue_status_chk check (status in ('queued','claimed','done','error'))
 );
 create index if not exists task_queue_status_idx on task_queue (status, created_at);
 

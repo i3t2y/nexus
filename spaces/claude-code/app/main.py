@@ -14,8 +14,8 @@ app = FastAPI(title="Nexus Claude")
 
 _API_KEY = os.getenv("NEXUS_API_KEY", "")
 _ANTHROPIC = os.getenv("ANTHROPIC_API_KEY", "")
-# 默认模型；最新 ID 见 docs/ARCHITECTURE.md，部署时覆盖
-_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+# 默认模型（Claude 5 族最新）；部署时按账号可用模型覆盖
+_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 
 
 def auth(authorization: str | None) -> None:

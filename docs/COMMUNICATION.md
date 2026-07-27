@@ -24,7 +24,7 @@
 
 ### 选 B 的理由
 
-- **鉴权统一**：Worker 校验 `NEXUS_API_KEY`，Space 自身不暴露无鉴权接口 → 风控面最小。
+- **鉴权统一**：Worker 校验 `NEXUS_API_KEY`，Space 自身不暴露无鉴权接口 → 暴露面最小。
 - **冷启动缓解**：Worker 可周期性探测下游 Space，唤醒休眠实例（keep-alive）。
 - **路由集中**：Hermes 调 Worker，Worker 按 `space` 参数转发，Space URL/owner 变动只改 Worker 配置。
 - **可加缓存/限流**：Worker 层免费加 retry、超时、限流，Space 代码更薄。
@@ -40,34 +40,48 @@ Worker 故障时直调保底。Hermes 内置 Space URL 列表，Worker 不可达
 
 ## 调用契约
 
-所有调用走 JSON POST，Header：
+所有调用走 JSON POST。两类链路 header 不同（关键：私有 Space 的 HF Gateway 占用 `Authorization`）：
+
+**调 Worker（主方案 B）** —— Worker 是独立 Cloudflare 边缘，无 HF 层：
 ```
-Authorization: Bearer <NEXUS_API_KEY>
+Authorization: Bearer <NEXUS_API_KEY>   # Worker 入站鉴权
 Content-Type: application/json
 ```
+
+**直调 Space（回退 A）** —— Space 经 HF Gateway，`Authorization` 留给 HF 层：
+```
+X-Nexus-Key: Bearer <NEXUS_API_KEY>     # app 自身鉴权（各 Space auth() 读它）
+Authorization: Bearer <HF_TOKEN>         # HF 层（私有 Space 必需，公开 Space 可省）
+Content-Type: application/json
+```
+
+> 同名 header 冲突风险：若直调也用 `Authorization` 传 `NEXUS_API_KEY`，会覆盖 HF 层 `HF_TOKEN` → HF 层 401，请求进不到 app。故下游 app 鉴权改用 `X-Nexus-Key`。
 
 ### 经 Worker（主）
 
 ```
 POST https://nexus-gateway.<your-workers-dev>.workers.dev/route
+Authorization: Bearer <NEXUS_API_KEY>
 Body: { "space": "langgraph", "path": "/execute", "task": {...} }
 ```
 
-Worker 转发到 `https://{owner}-langgraph.hf.space/execute`，透传 Body 与鉴权 header。
+Worker 鉴权后转发到 `https://{owner}-langgraph.hf.space/execute`，出站 header 改 `X-Nexus-Key: Bearer <NEXUS_API_KEY>` + 私有 Space 加 `Authorization: Bearer <HF_TOKEN>`，透传 Body。
 
 ### 直调（回退）
 
 ```
 POST https://{owner}-langgraph.hf.space/execute
-Authorization: Bearer <NEXUS_API_KEY>
+X-Nexus-Key: Bearer <NEXUS_API_KEY>
+Authorization: Bearer <HF_TOKEN>          # 私有 Space 必需
 Body: { "task": {...} }
 ```
+各 Space `auth()` 读 `X-Nexus-Key`，回退 `Authorization` 兼容。
 
 ## 超时与重试
 
 - 客户端总超时 90s（含可能冷启动）。
-- Worker 转发超时 60s。
-- 5xx / 超时重试 2 次，指数退避。
+- Worker 转发超时 60s（`AbortSignal.timeout(60_000)`，见 `index.ts`）。
+- **重试**：未实现。**注意 LLM POST 非幂等**——盲目重试易双扣费/双执行。模板阶段不上自动重试；接入重试须先配幂等键（`Idempotency-Key` header + `task_queue.idempotency_key` 唯一约束）。0xx/连接级重试（下游不可达，未生成内容）可安全加，5xx/超时（可能已执行）则不可重试除非幂等键已落。
 - 下游 Space 自身处理超 60s 的任务应改异步：收 task → 入 Supabase `task_logs` → 返回 task_id → 轮询状态。
 
 ## 未决项（凭证就位后定）

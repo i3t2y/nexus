@@ -17,7 +17,7 @@ SPACE_OWNER = "your-hf-username"
 # npx wrangler secret put HF_TOKEN
 
 # Cron 保活：每 10 分钟探测一次各 Space（免费额度 5 个 cron / Worker）。
-# 注意：完全规律易被风控特征识别，HF 侧主要靠你的外部监测网站；
+# 注意：完全规律易形成可观测周期，HF 侧主要靠你的外部监测网站；
 # 这里作补充，建议保持低频。
 [triggers]
 crons = ["*/10 * * * *"]

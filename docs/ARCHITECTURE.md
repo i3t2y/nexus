@@ -1,12 +1,12 @@
 # Nexus 架构总览
 
 > 混合 Agent 系统：HF Spaces 计算 + Cloudflare R2 大文件 + Supabase Postgres 结构化状态。
-> 目标：稳定、低成本、低风控。
+> 目标：稳定、低成本、低暴露。
 
 ## 设计原则
 
 1. **计算与存储分离** — HF Space 只当计算单元，所有持久状态走 R2 / Supabase。Space 重启不丢数据。
-2. **主控路由** — Hermes 唯一入口，下游 Space 不直接对外。降低风控面。
+2. **主控路由** — Hermes 唯一入口，下游 Space 不直接对外。降低暴露面。
 3. **凭证外置** — 所有密钥通过 Space Secrets / 环境变量注入，不入库不入代码。
 4. **模板先行** — 凭证未到位前，全部文件可直接部署，填 `.env` 即跑。
 
@@ -84,6 +84,18 @@ Space 内 `/data` 持久存储**已下线**。跨重启持久必须用 R2 / Supa
 ### auth fail-closed
 
 `auth()` 缺 `NEXUS_API_KEY` 时拒绝（500 配置错误），不"忘配即放行"。本地免鉴权显式设 `NEXUS_AUTH_MODE=dev`。模板默认走生产语义，降低误留 open 的风险。
+
+### Worker path 白名单（防 SSRF）
+
+`workers/gateway/src/index.ts` `/route` 对下游 `path` 做白名单（`/execute` `/run` `/complete` `/health`），挡住任意 path 透传到任意 URL/端点。`/` 起头校验 + `..` 检测防回溯与绝对 URL。
+
+### 幂等键（防双扣费 / 双执行）
+
+`task_queue.idempotency_key` UNIQUE 列。`POST /enqueue` 接 `Idempotency-Key` header；同键重复入队命中已有，不重复执行。LLM POST 本身非幂等——上自动重试必先配幂等键，否则 5xx/超时已执行场景会双扣费/双执行。`/dequeue` 单消费者模板（两步 select+update 非原子锁，多消费者需改 Postgres `FOR UPDATE SKIP LOCKED` 直连）。
+
+### lifespan 池化（langgraph）
+
+`langgraph app/main.py` 用 FastAPI `lifespan` 启动建一次 `AsyncPostgresSaver` + `await cp.setup()` + 编译 graph，存 `app.state`；请求复用全局 checkpointer+graph，**不再每请求 setup**（违背文档"setup() 仅启动一次"+ 每次新连接开销量）。`AsyncPostgresSaver` 由 `build_checkpointer()`（`libs/shared/checkpointer.py`）构造，`from_conn_string` 内已设 `prepare_threshold=0`/`autocommit`/`row_factory`，6543 安全。
 
 ### Hermes Agent ≠ HTTP 服务（查证修正）
 

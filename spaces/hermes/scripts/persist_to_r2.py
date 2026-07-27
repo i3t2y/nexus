@@ -57,7 +57,8 @@ def _atomic_upload(r2, key: str, body: bytes) -> None:
     """
     tmp = f"_tmp/{key}.partial"
     r2.put_object(Bucket=_BUCKET, Key=tmp, Body=body)
-    # R2 不收费 copy，原子替换
+    # R2 CopyObject 属 Class A 操作（计费），仅 Class B 出口免费。
+    # 生产需注意额度：4 表 × 每次三步 ≈ 10 万 Class A/月仍属免费层 (100 万/月) 内。
     r2.copy_object(
         Bucket=_BUCKET,
         Key=key,

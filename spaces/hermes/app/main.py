@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 # 共享库（构建前已同步到本 Space 目录 libs/）
 from storage import load_state, log_task, save_state
+from storage import enqueue_task, claim_task, complete_task, load_task
 from storage import r2_client
 from gateway import call_space
 
@@ -49,6 +50,74 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "space": "hermes"}
 
 
+@api.get("/state/{thread_id}")
+async def get_state(thread_id: str, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None)) -> dict[str, Any]:
+    """查任务/Agent 状态（agent_states 表）。无记录返 404。"""
+    auth(x_nexus_key or authorization)
+    state = load_state(thread_id)
+    if state is None:
+        raise HTTPException(404, f"thread {thread_id} 无状态记录")
+    return {"thread_id": thread_id, "state": state}
+
+
+# ── 异步任务队列（task_queue，带幂等键）───────────────────────────
+@api.post("/enqueue")
+async def enqueue(body: RunBody, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None), idempotency_key: str | None = Header(None, alias="Idempotency-Key")) -> dict[str, Any]:
+    """入队任务（异步模式）。带 `Idempotency-Key` header 实现幂等：同键重复命中已有，不重复执行。
+
+    路由决策同 /run；区别是不立即调下游，写 task_queue(queued)，由 /dequeue 消费。
+    """
+    auth(x_nexus_key or authorization)
+    import uuid
+
+    thread_id = str(uuid.uuid4())
+    space = route(body.prompt, body.force_space)
+    created = enqueue_task(thread_id, space, {"prompt": body.prompt}, idempotency_key)
+    log_task(thread_id, "hermes", f"enqueue→{space}", "queued")
+    save_state(thread_id, {"prompt": body.prompt, "space": space, "phase": "queued"})
+    # 幂等命中：返回已入队信息（不暴露既有 thread_id 避免越权；调用方靠 idempotency_key 查状态）
+    if not created and idempotency_key:
+        return {"enqueued": False, "idempotency_key": idempotency_key, "space": space, "hint": "已有同键任务，用 Idempotency-Key + GET /task 查状态"}
+    return {"enqueued": True, "task_id": thread_id, "space": space}
+
+
+@api.post("/dequeue")
+async def dequeue(x_nexus_key: str | None = Header(None), authorization: str | None = Header(None), space: str | None = None) -> dict[str, Any]:
+    """认领一条 queued 任务 → 调下游 → 完成。单消费者模板实现。
+
+    `space` query 可限某 lane。无任务返 `{"idle": True}`。
+    """
+    auth(x_nexus_key or authorization)
+    job = claim_task(space)
+    if job is None:
+        return {"idle": True}
+    tid = job["thread_id"]
+    target_space = job["space"]
+    prompt = (job.get("payload") or {}).get("prompt", "")
+    log_task(tid, "hermes", f"dequeue→{target_space}", "claimed")
+    try:
+        result = await call_space(target_space, _target_path(target_space), {"thread_id": tid, "prompt": prompt})
+        complete_task(tid, {"result": result}, status="done")
+        save_state(tid, {"phase": "done", "downstream": target_space, "result": result})
+        log_task(tid, target_space, "invoke", "done")
+        return {"task_id": tid, "space": target_space, "status": "done", "result": result}
+    except Exception as e:  # noqa: BLE001
+        complete_task(tid, {"error": str(e)}, status="error")
+        save_state(tid, {"phase": "error", "err": str(e)})
+        log_task(tid, target_space, "invoke", "error")
+        return {"task_id": tid, "space": target_space, "status": "error", "error": str(e)}
+
+
+@api.get("/task/{thread_id}")
+async def get_task(thread_id: str, x_nexus_key: str | None = Header(None), authorization: str | None = Header(None)) -> dict[str, Any]:
+    """查 task_queue 一行（queued/claimed/done/error）。无返 404。"""
+    auth(x_nexus_key or authorization)
+    row = load_task(thread_id)
+    if row is None:
+        raise HTTPException(404, f"task {thread_id} 无记录")
+    return {"task_id": thread_id, "space": row.get("space"), "status": row.get("status"), "result": row.get("result")}
+
+
 # ── 路由决策 ────────────────────────────────────────────────────────
 _KEYWORDS = {
     "langgraph": ["规划", "多步", "工作流", "依赖", "分解", "plan", "workflow"],
@@ -63,7 +132,9 @@ def route(prompt: str, force: str | None) -> str:
     for space, kws in _KEYWORDS.items():
         if any(k in prompt.lower() for k in kws):
             return space
-    return "langgraph"
+    # 默认不走 langgraph（普通任务不该进工作流编排）；
+    # 兜底用 claude 通用推理 lane，需编排时显式 force_space=langgraph。
+    return "claude"
 
 
 def _target_path(space: str) -> str:
@@ -174,7 +245,11 @@ def delete_r2(filename: str) -> str:
 def _build_dashboard() -> gr.Blocks:
     with gr.Blocks(title="Nexus Hermes 控制台") as demo:
         gr.Markdown("# 🧠 Nexus Hermes 主控控制台")
-        gr.Markdown("HTTP API: `POST /run` · `GET /state/{id}` · `GET /health` · 路由至 langgraph/claude/codex")
+        gr.Markdown(
+            "HTTP API: `POST /run` · `POST /enqueue`(异步,带`Idempotency-Key`) · "
+            "`POST /dequeue` · `GET /state/{id}` · `GET /task/{id}` · `GET /health` · "
+            "路由 langgraph/claude/codex"
+        )
 
         with gr.Tab("任务路由"):
             p_in = gr.Textbox(label="任务 prompt", lines=3, placeholder="例：规划一个三步部署流程")

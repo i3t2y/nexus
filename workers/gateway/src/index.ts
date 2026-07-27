@@ -9,7 +9,7 @@
 
 interface RouteBody {
   space: "langgraph" | "claude" | "codex";
-  path: string; // 如 /execute、/run、/complete
+  path: string; // 仅白名单端点：/execute /run /complete /health
   body: unknown;
 }
 
@@ -42,8 +42,12 @@ export default {
     if (err) return err;
 
     const { space, path, body } = (await req.json().catch(() => ({}))) as Partial<RouteBody>;
-    if (!space || !path || !SPACE_REPOS[space]) {
-      return json({ error: "invalid space/path" }, 400);
+    if (!space || !SPACE_REPOS[space]) {
+      return json({ error: "invalid space" }, 400);
+    }
+    if (!path || !isAllowedPath(path)) {
+      // 白名单 + 防争用：仅放行已知下游端点，挡住任意 path 透传（SSRF 面）
+      return json({ error: "invalid path" }, 400);
     }
 
     // 下游 URL：显式 var 优先，否则拼接
@@ -93,6 +97,25 @@ function json(obj: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * 下游路径白名单（防 SSRF：挡住任意 path 透传到任意 URL/端点）。
+ * 仅放行各下游 Space 已声明的端点。
+ */
+const ALLOWED_PATHS = new Set([
+  "/execute",   // langgraph
+  "/run",        // claude
+  "/complete",   // codex
+  "/health",     // 全 Space
+]);
+
+function isAllowedPath(path: string): boolean {
+  if (typeof path !== "string" || path.length === 0) return false;
+  // 必须 `/` 起头，挡住绝对 URL（//host）与相对回溯
+  if (path[0] !== "/") return false;
+  if (path.includes("..")) return false;
+  return ALLOWED_PATHS.has(path);
 }
 
 /** 鉴权校验，返回 Response 则表示失败需直接返回。 */

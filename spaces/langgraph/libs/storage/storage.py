@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import boto3
@@ -122,6 +123,73 @@ def log_task(thread_id: str, space_name: str, action: str, status: str) -> None:
             "status": status,
         }
     ).execute()
+
+
+# ── 异步任务队列（task_queue 表，带幂等键）───────────────────────────
+def enqueue_task(thread_id: str, space: str, payload: dict[str, Any], idempotency_key: str | None = None) -> bool:
+    """入队。幂等：同 idempotency_key 已存在 → 不重复入队，返回 False（命中已有）。
+
+    无 idempotency_key 时正常入；冲突(thread_id 重复)由 on_conflict 处理为忽略。
+    """
+    supa = supabase_client()
+    row = {"thread_id": thread_id, "space": space, "payload": payload, "status": "queued"}
+    if idempotency_key:
+        row["idempotency_key"] = idempotency_key
+        # 同幂等键命中：先查已有，不重复入
+        exist = (
+            supa.table("task_queue")
+            .select("thread_id")
+            .eq("idempotency_key", idempotency_key)
+            .maybe_single()
+            .execute()
+        )
+        if exist.data:
+            return False  # 命中已入队，调用方应返回既有 thread_id 状态
+    try:
+        supa.table("task_queue").upsert(row, on_conflict="thread_id").execute()
+        return True
+    except Exception:  # noqa: BLE001
+        # 唯一约束冲突等 → 视作命中已有
+        return False
+
+
+def claim_task(space: str | None = None) -> dict[str, Any] | None:
+    """认领一条 queued 任务 → claimed。无任务返 None。
+
+    简化模板：用 select+update 两步（非原子，多消费者高并发会有竞争）；
+    单消费者场景够用。生产应改 Postgres FOR UPDATE SKIP LOCKED（直连 SQL）。
+    """
+    supa = supabase_client()
+    q = supa.table("task_queue").select("*").eq("status", "queued").order("created_at").limit(1)
+    if space:
+        q = q.eq("space", space)
+    row = q.maybe_single().execute().data
+    if not row:
+        return None
+    supa.table("task_queue").update(
+        {"status": "claimed", "claimed_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("thread_id", row["thread_id"]).execute()
+    return row
+
+
+def complete_task(thread_id: str, result: dict[str, Any], status: str = "done") -> None:
+    """任务完成/失败：更新 result + status。"""
+    supabase_client().table("task_queue").update(
+        {"result": result, "status": status}
+    ).eq("thread_id", thread_id).execute()
+
+
+def load_task(thread_id: str) -> dict[str, Any] | None:
+    """读 task_queue 一行。无返 None。"""
+    res = (
+        supabase_client()
+        .table("task_queue")
+        .select("*")
+        .eq("thread_id", thread_id)
+        .maybe_single()
+        .execute()
+    )
+    return res.data or None
 
 
 def remember(key: str, value: dict[str, Any]) -> None:
