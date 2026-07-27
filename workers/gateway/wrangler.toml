@@ -1,0 +1,15 @@
+name = "nexus-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[vars]
+# HF 用户名；下游 URL 拼成 https://{owner}-{repo}.hf.space
+SPACE_OWNER = "your-hf-username"
+
+# 显式覆盖各 Space URL（可省，省则按 OWNER 拼接）
+# LANGGRAPH_URL = "https://..."
+# CLAUDE_URL = "https://..."
+# CODEX_URL = "https://..."
+
+# NEXUS_API_KEY 用 secret，不写这里：
+# npx wrangler secret put NEXUS_API_KEY

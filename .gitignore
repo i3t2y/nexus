@@ -1,0 +1,25 @@
+# 凭证绝不入库
+.env
+.env.*
+!.env.example
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# Node / Worker
+node_modules/
+.wrangler/
+.dev.vars
+
+# HF Space 同步产物（如选择不入 libs 副本则忽略）
+# spaces/*/libs/
+
+# 系统
+.DS_Store
+*.log
