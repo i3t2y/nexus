@@ -26,6 +26,7 @@
 | 约束 | 事实 | 本方案如何应对 |
 |------|------|--------------|
 | **HF Docker 付费墙** | 自 2024 起 Docker SDK Space 跑 compute 需 PRO/Team 套餐；个人免费号仅 2 个 ZeroGPU Gradio Space + CPU Basic 免费 | 4 个 Space 全用 Docker SDK。部署前确认账号有付费套餐，否则 langgraph/claude/codex 三个 Docker Space 创建不了。hermes 可改 Gradio + ZeroGPU 跑免费层 |
+| **HF 旧 Docker Space 锁死(2026-07)** | 免费个人号旧 Docker Space 无限量 rebuild;git push/Factory reboot 触发 rebuild=付费墙;改 hardware 收费不可逆;pause 后 restart 可能 403 永锁 | 采纳永续改造:hermes 逻辑层进 HF Storage Bucket /data 挂载(改逻辑=sync+Restart 永不 git push);依赖进 GHCR base 镜像(Dockerfile 墓碑,ARG 默认值 ghcr..:stable 兜底防 HF build-arg 注入未生效);重启用缓存镜像不触墙。详见 ARCHITECTURE "Hermes 永续改造" 节 |
 | **免费 Space 会休眠** | CPU Basic / ZeroGPU 闲置即睡，首调冷启动数十秒 | 外部监测网站定期 ping `/health`（主，已验证稳定）；Worker cron + hermes `keepalive.py` 内部互探（辅）。间隔随机化避免固定周期 |
 | **HF 出站端口限制** | 仅 80/443/8080 放行 | R2(S3 API 443)、Supabase(HTTPS 443) 均无碍 |
 | **`/data` 已下线** | Space 内持久存储已废 | 跨重启持久必须走 R2/Supabase，不依赖本地磁盘 |
@@ -63,8 +64,10 @@ nexus/
 ├── sql/
 │   ├── 00_schema.sql         # Supabase 基础表(幂等)
 │   └── 01_pgvector.sql       # 向量扩展(可选)
+├── docker/                   # GHCR base 镜像: nexus-base.Dockerfile + requirements-base.txt(依赖层,本地 build 推 ghcr.io/<owner>/nexus-base:stable)
 └── scripts/
-    └── sync-spaces.sh        # 把 libs/ 复制进各 Space 目录(build 前必跑)
+    ├── sync-spaces.sh        # libs/ → 3 非 hermes Space 的 libs/(build 前必跑,hermes 例外)
+    └── sync-logic-bucket.sh  # hermes 逻辑真源 → HF Storage Bucket nexus-logic(改逻辑后必跑+Restart,永不 git push HF)
 ```
 
 ### 2.2 共享库 `libs/`（根目录为唯一真源，build 前 `sync-spaces.sh` 复制进各 Space 的 `libs/`）
@@ -78,13 +81,17 @@ nexus/
 | `libs/shared/errors.py` | `new_request_id(inbound)`, `error_response(code,msg,status,rid,retryable=None)`, `raise_nexus_error(...)`, `log_event(rid,space,action,status,**extra)` | 统一错误体 `{error:{code,message,retryable,request_id}}` + 结构化 JSON 日志（stdout）。`retryable` 按 code 推断（downstream_*/db_unavailable/rate_limited = 可重试） |
 | `libs/shared/__init__.py` | re-export `call_space`, `ping`, `new_request_id`, `error_response`, `raise_nexus_error`, `log_event` | 包标记 + 便捷统一导入 |
 
-> **关键约束**：根 `libs/` 是唯一真源。改完根 libs 后、`git push` 前**必须**跑 `bash scripts/sync-spaces.sh`（或先 `--check` 自检），否则各 Space build 出来跑的是旧库。CI 闸门 `.github/workflows/sync-check.yml` 在触动 libs 时跑 `--check` + py_compile + tsc 兜底。各 Space 的 `libs/` 是同步产物（可提交，HF 直接读 repo 无构建后同步步骤）。
+> **关键约束**(改后):根 `libs/` 与 `spaces/hermes/app|scripts` 是唯一真源(CI 守此)。各流改法不同:
+> - **3 非 hermes Space**(走 git 副本 build context):改完根 libs 后、`git push` 前必跑 `bash scripts/sync-spaces.sh`(--check 自检),否则 Space build 跑旧库。各 Space `libs/` 是同步产物可提交。
+> - **hermes**(永续改造,逻辑进 Bucket):改 `libs/` `spaces/hermes/app|scripts` 后跑 `bash scripts/sync-logic-bucket.sh` 推 HF Storage Bucket + Settings Restart(永不 git push)。CI py_compile 仍校 git 真源。
+> - **升依赖**:改 `docker/requirements-base.txt` → 本地 build 推 GHCR :stable → README 一字符 git push(用户手动 1 次)。Dockerfile 墓碑永不动。
+> CI 闸门 `.github/workflows/sync-check.yml` + `docker-base.yml` 兜底。
 
 ### 2.3 四个 Space
 
 | Space | URL repo 名 | SDK | 端口 | 角色 |
 |-------|-----------|-----|------|------|
-| hermes | `hermes` | docker | 7860 | 主控大脑：Dashboard + FastAPI 路由 + 双写/保活/自愈后台 |
+| hermes | `hermes` | docker | 7860 | 主控大脑：Dashboard + FastAPI 路由 + 双写/保活/自愈后台。**永续改造**:逻辑层进 HF Storage Bucket /data,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑 |
 | langgraph | `langgraph` | docker | 7860 | 复杂工作流编排，AsyncPostgresSaver Checkpoint + R2 blob |
 | claude-code | `claude-code` | docker | 7860 | 强推理，对接 Anthropic Messages API |
 | codex | `codex` | docker | 7860 | 快速编码，对接 OpenAI 兼容 /chat/completions |
@@ -95,12 +102,12 @@ Space URL 统一格式：`https://{owner}-{repo}.hf.space`。
 ```
 spaces/hermes/
 ├── README.md       # ← frontmatter 被 HF 当 Space config(title/sdk/app_port/tags...)
-├── Dockerfile      # python:3.11-slim, EXPOSE 7860, PYTHONPATH=.../libs
-├── requirements.txt
-├── start.sh        # 仅 hermes:自愈循环 + 后台启动双写/保活
-├── app/main.py     # 业务代码
-├── libs/           # 由 sync-spaces.sh 复制(构建时已就位)
-└── scripts/        # 仅 hermes
+├── Dockerfile      # 墓碑:ARG BASE_IMAGE=ghcr.io/<owner>/nexus-base:stable + FROM ${BASE_IMAGE},EXPOSE 7860,ENV PYTHONPATH=/data/libs;首切后永不动
+（无 requirements.txt — 依赖进 GHCR base 镜像）
+├── start.sh        # 仅 hermes:wait-for-mount /data + uvicorn --app-dir /data + 自愈循环
+├── app/main.py     # 逻辑层 → HF Storage Bucket nexus-logic/(挂载 /data),不在镜像
+├── libs/           # 逻辑层 → HF Storage Bucket nexus-logic/(挂载 /data),不在镜像
+└── scripts/        # 仅 hermes;逻辑层 → HF Storage Bucket nexus-logic/(挂载 /data),不在镜像
     ├── persist_to_r2.py     # Supabase→R2 双写快照(原子覆盖 + sha256 + manifest)
     ├── restore_from_r2.py   # R2→Supabase 反向恢复(--table/--all/--list，sha256 校验门)
     ├── replay_packages.py  # 重启重装历史 pip 包
@@ -313,6 +320,8 @@ bash scripts/sync-spaces.sh   # libs/ → spaces/*/libs/
 
 每次改根 `libs/` 后、`git push` 前必跑。
 
+注:hermes 例外(永续改造后逻辑层进 Bucket),hermes 改逻辑走 `scripts/sync-logic-bucket.sh` + Restart,不走 sync-spaces.sh。sync-spaces.sh 现仅处理 langgraph/claude-code/codex 三 Space(SPACES 数组已去 hermes)。
+
 ### 步骤 3：部署 hermes
 
 HF New Space(docker,私有,命名 `hermes`)；Settings→Secrets 加 5.1 表里 hermes 徽标✓的全部；push `spaces/hermes/`；验证 GET `/health` 200、POST `/run` 返 task_id、查 `task_logs` 有记录。
@@ -373,7 +382,9 @@ OpenAI 兼容：`POST {OPENAI_BASE_URL}/chat/completions`，header `Authorizatio
 ## 9. 二次开发指引
 
 ### 改共享库
-改 `libs/` → 跑 `sync-spaces.sh` → 各 Space 重新部署。勿直接改 `spaces/*/libs/`（会被下次 sync 覆盖）。
+- **3 非 hermes Space**(langgraph/claude-code/codex,暂走 git 副本 build context):改 `libs/` → 跑 `sync-spaces.sh` → 各 Space 重新部署。勿直接改 `spaces/*/libs/`(会被下次 sync 覆盖)。
+- **hermes**(永续改造,逻辑层进 Bucket):改 `libs/` 或 `spaces/hermes/app|scripts` → 跑 `bash scripts/sync-logic-bucket.sh`(推 HF Storage Bucket nexus-logic)→ Settings Restart(用缓存镜像,不触付费墙,永不 git push)。根 libs/ 仍是真源,CI 守此。
+- **升依赖**(hermes + 后续切 Bucket 的 Space):改 `docker/requirements-base.txt` → 本地 `docker build -t ghcr.io/<owner>/nexus-base:stable -f docker/nexus-base.Dockerfile docker/` + `docker push` 覆盖 :stable → 改 HF repo README 一字符 git push(用户手动,1 次过付费墙)。Dockerfile 墓碑永不动。
 
 ### 加下游 Space
 1. 复制 `spaces/codex/` 结构改 `app/main.py` 端点
@@ -431,6 +442,8 @@ langgraph `node_*` 是桩返回。真实接入在 `node_understand`/`node_plan`/
 - **Worker(鉴权+路由+cron保活)** → `workers/gateway/src/index.ts` + `wrangler.toml`
 - **SQL 建表** → `sql/00_schema.sql` + `sql/01_pgvector.sql`
 - **同步脚本** → `scripts/sync-spaces.sh`
+- **流量同步(hermes 逻辑→Bucket)** → `scripts/sync-logic-bucket.sh`(改 hermes 逻辑后必跑 + Space Restart,永不 git push HF)
+- **GHCR base 镜像构建** → `docker/nexus-base.Dockerfile`、`docker/requirements-base.txt`、`.github/workflows/docker-base.yml`
 - **凭证模板** → `.env.example`
 - **各 Space 镜像/依赖/README config** → `spaces/*/Dockerfile`+`requirements.txt`+`README.md(frontmatter)`
 

@@ -24,7 +24,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-sys.path.insert(0, "/home/user/app/libs")  # Space 内 PYTHONPATH 已设，本地调试兜底
+sys.path.insert(0, "/data/libs")  # Bucket 挂载点;Space 内 PYTHONPATH 已设，本地调试兜底
 import boto3  # noqa: E402
 from botocore.config import Config  # noqa: E402
 from supabase import create_client  # noqa: E402

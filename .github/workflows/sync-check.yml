@@ -9,14 +9,20 @@ on:
       - "libs/**"
       - "spaces/*/libs/**"
       - "scripts/sync-spaces.sh"
+      - "scripts/sync-logic-bucket.sh"
       - ".github/workflows/sync-check.yml"
       - "spaces/*/app/**"
+      - "spaces/hermes/scripts/**"
+      - "docker/**"
       - "workers/**"
   pull_request:
     paths:
       - "libs/**"
       - "spaces/*/libs/**"
       - "scripts/sync-spaces.sh"
+      - "scripts/sync-logic-bucket.sh"
+      - "spaces/hermes/scripts/**"
+      - "docker/**"
 
 jobs:
   sync-check:
@@ -31,7 +37,12 @@ jobs:
         run: |
           set -e
           fail=0
-          for s in hermes langgraph claude-code codex; do
+          # hermes 逻辑进 Bucket 不走 git 副本:直接编 git 真源(spaces/hermes/app + scripts + libs)
+          for f in spaces/hermes/app/*.py spaces/hermes/scripts/*.py; do
+            python3 -m py_compile "$f" || fail=1
+          done
+          # 3 non-hermes Space 仍走 git 副本 build context:编其 app(scripts 与 libs 跟随)
+          for s in langgraph claude-code codex; do
             for f in spaces/$s/app/*.py; do
               python3 -m py_compile "$f" || fail=1
             done

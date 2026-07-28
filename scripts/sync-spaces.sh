@@ -8,7 +8,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBS="$ROOT/libs"
-SPACES=(hermes langgraph claude-code codex)
+# 注:hermes 不在此列表——其逻辑层进 HF Storage Bucket(/data 挂载),
+#     不再走 git 副本 build context;hermes 逻辑真源由 scripts/sync-logic-bucket.sh 推 Bucket。
+#     见 docs/ARCHITECTURE.md "Bucket 永续改造" 节。
+SPACES=(langgraph claude-code codex)
 MODE="sync"
 
 if [ "${1:-}" = "--check" ]; then
@@ -63,5 +66,5 @@ if [ "$fail" -ne 0 ]; then
   echo "[check] 失败：存在不一致，请先跑：bash scripts/sync-spaces.sh"
   exit 1
 fi
-echo "[check] 通过：4 Space libs 与 root libs 完全一致"
+echo "[check] 通过：3 non-hermes Space libs 与 root libs 完全一致"
 exit 0

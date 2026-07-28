@@ -14,7 +14,7 @@
 
 | Space | 角色 | SDK | 状态 |
 |-------|------|-----|------|
-| `hermes` | 主控大脑：Gradio Dashboard + FastAPI 路由（监听7860）+ 双写/保活/自愈后台 | Docker | 模板 |
+| `hermes` | 主控大脑：Gradio Dashboard + FastAPI 路由（监听7860）+ 双写/保活/自愈后台。**永续改造**:逻辑层进 HF Storage Bucket /data 挂载,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑永不动 | Docker | 模板 |
 | `langgraph` | 复杂工作流编排，含 Checkpointer | Docker | 模板 |
 | `claude-code` | 复杂推理、代码生成 | Docker | 模板 |
 | `codex` | 快速编码、补全 | Docker | 模板 |
@@ -107,6 +107,26 @@ Space 内 `/data` 持久存储**已下线**。跨重启持久必须用 R2 / Supa
 
 `gateway` 在 `libs/shared/` 子包，**勿用 `from gateway import`**（顶层解析失败，PYTHONPATH=libs 不含 `shared/`）。各 Space 用 `from shared.gateway import call_space, ping`。`storage` 仍是顶层包（`libs/storage/`），`from storage import ...` 不变。
 
+### Hermes 永续改造(2026-07 锁死后)
+
+HF 免费个人号旧 Docker hermes Space 因 2026-07 平台变更锁死:git push/Factory reboot 触发 rebuild=付费墙(雷区1:rebuild 付费,雷区2:改 hardware 收费不可逆,雷区3:pause 后 restart 可能 403 永锁)。Restart 用缓存镜像不触墙(安全)。方案=绝对静态化,四层分离:
+
+| 层 | 存哪 | 改触发 rebuild? | 文件 |
+|----|------|------|------|
+| 镜像层(钉死) | GHCR `ghcr.io/<owner>/nexus-base:stable` | 仅升依赖时本地 build 推 GHCR 覆盖 :stable | python:3.11-slim+四 Space 依赖超集 |
+| 环境层(墓碑) | HF repo git | 仅首切 1 次(+依赖升 1 次 README 撞墙) | Dockerfile(ARG+FROM)、start.sh、README.md |
+| 逻辑层(常改) | HF Storage Bucket rw `/data` | 否,sync+Restart | app/scripts/libs |
+| 配置层 | HF Secrets | 否,只 Restart | 凭据 |
+
+- **改逻辑**: `bash scripts/sync-logic-bucket.sh` → Settings Restart(永不 git push HF)
+- **升依赖**: 本地 `docker build -t ghcr.io/<owner>/nexus-base:stable -f docker/nexus-base.Dockerfile docker/` + `docker push` 覆盖 :stable → 改 README 一字符 git push(用户手动,1 次过付费墙窗口)
+- **首切鸡生蛋顺序(不可颠倒)**: ① build 推 GHCR :stable → ② HF 建 Bucket nexus-logic + Space 配 Volume /data rw → ③ `sync-logic-bucket.sh` 推逻辑 → ④ Settings Restart 验挂载 → ⑤ git push HF(1 次 rebuild) → ⑥ uvicorn `app.main:app --app-dir /data` import 成功
+
+#### FROM ${ARG} 查证裁决(立论依据)
+- ✅ 改 Variable 只 Restart 不 Rebuild(HF 官方"Any config change triggers a restart"证实)→ ARG 切镜像与浮动标签切镜像均需重建,成本打平,ARG 无"免重建换镜像"优势
+- ⚠️ FROM ${ARG} HF 行为**未证实**(非"不可靠"):官方示例自身有 Docker 语义瑕疵(ARG 前 FROM 声明却在 FROM 后 RUN 用,需 stage 内重声明未写);社区唯一"失败"报告用 `printenv` 测法错(build-arg 按设计不显 ENV)
+- 结论:选硬编码浮动标签 `FROM ${BASE_IMAGE}` + ARG 默认值 `ghcr.io/<owner>/nexus-base:stable` 兜底。理由=重建是不可再生资源(付费墙+配额稀缺),单程票文件只允许最大化验证特性,代价相同选确定性满分一方(Dockerfile 永不动)。详见 docs 查证章。
+
 ### Hermes Agent ≠ HTTP 服务（查证修正）
 
 Nous Research 开源 Hermes Agent（`github.com/NousResearch/hermes-agent`，`curl install.sh | bash` 安装）是 **TUI/CLI 交互式 agent**，基于 `uv` 装在 `~/.hermes/`。`hermes gateway start` 指**消息平台网关**（Telegram/Discord 等），**不监听 HTTP 端口**，**无 `--port` 参数**。
@@ -141,19 +161,24 @@ API 已对照官方文档（2026-07）：
 | 原子备份/恢复 | HermesFace | R2 写 tmp→copy 原子替换（替代 HF Dataset 原子写）；备份算 sha256+size 写 `backup_snapshots` 表与 R2 manifest，`restore_from_r2.py` 反向闭环时复算校验 | `spaces/hermes/scripts/persist_to_r2.py`、`restore_from_r2.py` |
 | Supabase→R2 双写同步 | 两者 | 周期把 Supabase 表快照写 R2（5分钟） | 同上 |
 | Dashboard 文件管理 | 两者 | Gradio Tab：R2 文件 上传/读入/编辑/保存/删除/刷新 | `spaces/hermes/app/main.py` |
+| **Bucket 永续改造** | OmniRoute 永续 | hermes 逻辑层(app/scripts/libs)从 Space repo 搬 HF Storage Bucket rw `/data` 挂载;改逻辑=`sync-logic-bucket.sh` 推 Bucket + Settings Restart(用缓存镜像,永不 git push=不触付费墙) | `scripts/sync-logic-bucket.sh`、`spaces/hermes/Dockerfile`、`spaces/hermes/start.sh` |
+| **GHCR base 镜像静态化** | 绝对静态化 | 依赖打 `ghcr.io/<owner>/nexus-base:stable`,Dockerfile `ARG BASE_IMAGE=...:stable`+`FROM ${BASE_IMAGE}`(默认值兜底);升依赖=本地 build 推 GHCR 覆盖 :stable + 改 README 一字符 git push(用户手动 1 次)。三文件成墓碑永不动 | `docker/nexus-base.Dockerfile`、`docker/requirements-base.txt`、`.github/workflows/docker-base.yml`、`spaces/hermes/Dockerfile` |
 
-Hermes Space 目录：
+Hermes Space 目录(永续改造后,镜像仅留引导=墓碑):
 ```
-spaces/hermes/
-├── README.md  Dockerfile  requirements.txt  start.sh
-├── app/main.py        # Gradio Dashboard + FastAPI 路由（同进程7860）
-├── libs/              # 同步的共享库（storage/gateway）
-└── scripts/
-    ├── persist_to_r2.py      # Supabase→R2 双写快照（原子覆盖 + sha256 + manifest）
-    ├── restore_from_r2.py    # R2→Supabase 反向恢复（--table/--all/--list，sha256 校验门）
-    ├── replay_packages.py    # 重启重装包
-    └── keepalive.py          # 下游 Space 保活探测
+spaces/hermes/            # ← git 真源(逻辑层镜像;CI 守此)
+├── README.md             # 引导文件(HF 要求 frontmatter)
+├── Dockerfile            # 墓碑:ARG BASE_IMAGE=ghcr.io/<owner>/nexus-base:stable + FROM ${BASE_IMAGE} + COPY start.sh + ENV PYTHONPATH=/data/libs。首切后永不动
+├── start.sh              # 引导:wait-for-mount /data + uvicorn --app-dir /data + 自愈循环
+├── app/main.py           # 逻辑层 → 进 HF Storage Bucket nexus-logic/app/(挂载 /data/app),不在镜像
+├── libs/                 # 同上(=根libs 镜像)→ Bucket nexus-logic/libs/(挂载 /data/libs);真源在根 libs/ 由 sync-logic-bucket.sh 推
+└── scripts/              # → Bucket nexus-logic/scripts/(挂载 /data/scripts)
+    ├── persist_to_r2.py
+    ├── restore_from_r2.py
+    ├── replay_packages.py
+    └── keepalive.py
 ```
+(无 requirements.txt — 依赖进 GHCR base 镜像 ghcr.io/<owner>/nexus-base:stable)
 
 保活策略（用户已确认外部监测网站稳定可用）：
 - **Hermes/下游 Space**：主=外部监测网站 ping `/health`（已验证稳定）；辅=Worker cron + Hermes `keepalive.py` 内部互探，间隔随机化避免固定周期形成规律节奏。

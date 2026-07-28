@@ -24,7 +24,7 @@ import random
 import sys
 import time
 
-sys.path.insert(0, "/home/user/app/libs")  # 本地调试兜底
+sys.path.insert(0, "/data/libs")  # Bucket 挂载点;本地调试兜底
 
 import httpx  # noqa: E402
 

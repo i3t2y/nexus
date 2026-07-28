@@ -10,6 +10,7 @@
 | Cloudflare 账号 | R2 免费层 10GB + 100万 A类操作/月 | 超量计费，配 Lifecycle 清理 |
 | Supabase 账号 | 免费 500MB DB + 2 个项目 + 1 周不活跃自动暂停（仅停 compute） | 用 service_role 做服务端，anon 仅客户端；防暂停靠 keepalive.py 周期写表 |
 | GitHub 账号 | 私有库免费 | nexus 库私有 |
+| GitHub | GHCR 推 nexus-base 镜像需 account;repo Actions 权限 Read and write(推送 packages)| 权限不足则 base workflow 失败,各 Space Dockerfile FROM 拉 base 失败 |
 
 ## 步骤 1：Cloudflare R2
 
@@ -52,7 +53,26 @@ bash scripts/sync-spaces.sh --check  # 仅校验一致性（不写），不一�
 - CI 闸门：`.github/workflows/sync-check.yml` 在 push 触动 `libs/` 或 `spaces/*/libs/` 时跑 `--check` + py_compile + tsc，挡旧库/语法错进 HF。
 - 提交时 `spaces/*/libs/` 为同步产物，可提交（HF 直接读 repo 无构建后同步步骤）。
 
-## 步骤 2.6：备份恢复（R2 → Supabase 反向闭环，事故后用）
+> 注：以上同步仅适用 3 个非 hermes 的下游 Space(hermes 除外:其逻辑层走 Bucket,见步骤 2.7 与 sync-logic-bucket.sh)。
+
+## 步骤 2.6：构建 nexus-base 镜像并推 GHCR(hermes 永续改造前置,必做)
+
+hermes 及后续切 Bucket 的 Space 的 Docker build 引用 `ghcr.io/<owner>/nexus-base:stable` 作为 base。**HF push 前镜像必须在 :stable 存在**,否则 HF build 拉不到 base 失败。
+
+1. GitHub Create PAT(classic)勾 `write:packages`(或用 GITHUB_TOKEN,见 docker-base.yml workflow)。本地 `docker login ghcr.io -u <owner> -p <PAT>`。
+2. 本地 build:
+   ```bash
+   docker build -t ghcr.io/<owner>/nexus-base:stable -f docker/nexus-base.Dockerfile docker/
+   # 同时打版本标签作回退锚点
+   docker tag ghcr.io/<owner>/nexus-base:stable ghcr.io/<owner>/nexus-base:v0.1
+   docker push ghcr.io/<owner>/nexus-base:stable
+   docker push ghcr.io/<owner>/nexus-base:v0.1
+   ```
+3. GitHub repo → Packages → nexus-base → Package settings 设 Public(否则 HF build 拉 GHCR 需配 secret+docker login,复杂,建议公开 Nexus base 无敏感代码)。
+4. 或直接跑 `.github/workflows/docker-base.yml`(workflow_dispatch 手动触发),自动 build+push :stable(github.repository_owner 作 owner,GITHUB_TOKEN packages:write;需 repo Settings→Actions→Workflow permissions=Read and write)。
+5. 验证:`docker pull ghcr.io/<owner>/nexus-base:stable` 成功(本地或他机)。
+
+## 步骤 2.7：备份恢复（R2 → Supabase 反向闭环，事故后用）
 
 `persist_to_r2.py` 周期把 Supabase 业务表快照到 R2（含 sha256 + R2 manifest）；`restore_from_r2.py` 做反向恢复：
 
@@ -71,20 +91,33 @@ python spaces/hermes/scripts/restore_from_r2.py --all
 - **安全域**：仅 `agent_states`/`long_memory`/`skills_index` 走 upsert 全量覆盖；`task_logs`/`space_health` 等代理键表恢复仅校验通过不写（避免自增主键冲突）。
 - **空快照保护**：空快照跳过写回，防把表整体清空。
 
-## 步骤 3：部署 Hermes（主控）
+## 步骤 3：部署 Hermes（主控，永续改造首切）
 
-1. HF → New Space → 建议 Gradio SDK（ZeroGPU 免费层可跑）或 Docker；命名 `hermes`，私有。
-2. Settings → Secrets 加：
+**前提**：步骤 2.6 nexus-base 已推 GHCR :stable。
+
+1. HF 建 Storage Bucket `nexus-logic`（私有，rw；`hf buckets create nexus-logic --private`）。
+2. HF Space Settings:
+   - Storage/Volume 配置：挂 Bucket `nexus-logic` 到 `/data` rw（仅 runtime，build 期不可见）。
+   - Secrets 加（同前）：
+     ```
+     R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+     SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
+     NEXUS_API_KEY  HF_TOKEN  HF_OWNER
+     LANGGRAPH_URL  CLAUDE_URL  CODEX_URL
+     GATEWAY_URL  (Worker 上线后)
+     ```
+     生产全 Space `NEXUS_AUTH_MODE` 留空（fail-closed）。
+3. **本地推逻辑进 Bucket**（用户手动，不涉 HF push）：
+   ```bash
+   HF_TOKEN=... HF_OWNER=<hf-name> bash scripts/sync-logic-bucket.sh
+   # 验 Bucket UI 三目录 app/scripts/libs 在
    ```
-   R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
-   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
-   NEXUS_API_KEY  HF_TOKEN
-   LANGGRAPH_URL  CLAUDE_URL  CODEX_URL
-   GATEWAY_URL  (Worker 上线后)
-   ```
-   生产全 Space `NEXUS_AUTH_MODE` 留空（fail-closed）；本地调试设 `dev` 免鉴权。
-3. push `spaces/hermes/` 内容（已含 README frontmatter）。
-4. 验证：访问 Space → POST `/run` 返回 task_id；查 `task_logs` 有记录。
+4. Settings **Restart**（旧镜像验挂载通路）；start.sh wait-for-mount 见 `/data/app/main.py`（旧镜像 PYTHONPATH 不指 /data，报 import 错属正常，挂载已通即可）。
+5. **git push HF repo**（用户手动，那 1 次关键 rebuild 过付费墙窗口）。ARG 默认值 ghcr..:stable 兜底，HF 拉 base 镜像成功。
+6. rebuild 出新镜像（无 COPY 逻辑、依赖在 base、PYTHONPATH=/data/libs）、首启 wait-for-mount → uvicorn `app.main:app --app-dir /data` import 成功。
+7. 验证：GET `/health` 200、POST `/run` 返回 task_id、`task_logs` 有产、Dashboard 可见。
+
+**不可颠倒顺序**：GHCR base 优先 → Bucket 逻辑 → Volume 配+Restart 验挂载 → push HF rebuild → 启动 import。先 rebuild 后推 Bucket=空挂载 import 死锁;HF push 前无 GHCR base=rebuild 拉 base 失败。
 
 ## 步骤 4：部署下游 Space
 
@@ -93,6 +126,8 @@ python spaces/hermes/scripts/restore_from_r2.py --all
 2. Secrets 同 Hermes 的 R2/Supabase 一套 + `NEXUS_API_KEY` + `HF_TOKEN`（langgraph 还需 `SUPABASE_DB_URI`；claude 需 `ANTHROPIC_API_KEY`/`CLAUDE_MODEL`；codex 需 `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`CODEX_MODEL`）。
 3. push 对应 `spaces/<name>/` 目录。
 4. 健康：GET `/health` 200（注意 build 前必须先跑 `sync-spaces.sh`，否则 `from storage import` 失败）。
+
+> 注：hermes 已走步骤 3 Bucket 模式除外;3 下游 Space 暂仍走 git 副本 build context,build 前必跑 sync-spaces.sh,后续可选切 Bucket 共用 nexus-base。
 
 ## 步骤 5：Worker 网关
 
@@ -148,3 +183,5 @@ curl <hermes_url>/task/<task_id> -H "X-Nexus-Key: Bearer $NEXUS_API_KEY" -H "Aut
 
 - Space 出错 → Settings → Restart；代码回滚 `git push -f` 到上个 commit。
 - 表结构变更 → Supabase 先备份 → 改 SQL → 跑 `02_*.sql` 增量脚本。
+- **hermes 逻辑回退**: `sync-logic-bucket.sh` 推旧版逻辑覆盖 Bucket + Restart(不涉 git push HF);若需镜像回退=baseda 旧版,GHCR `docker push ghcr.io/<owner>/nexus-base:v0.1` 重新覆盖 :stable(留前版 :vN 标签作回退锚点)+ README 一字符 git push 重建。
+- **Dockerfile 墓碑不动原则**:hermes Dockerfile 首切后永不改;ARG 默认值写死 :stable,回退走 GHCR 覆盖 :stable(不破墓碑)。

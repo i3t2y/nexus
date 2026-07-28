@@ -14,7 +14,8 @@ import os
 import subprocess
 import sys
 
-_LOG = os.getenv("REPLAY_LOG", "/app/installed_packages.log")
+# 日志进 Bucket /data/logs(跨重启持久,顺带修 ephemeral 丢失问题)
+_LOG = os.getenv("REPLAY_LOG", "/data/logs/installed_packages.log")
 
 
 def replay() -> None:
