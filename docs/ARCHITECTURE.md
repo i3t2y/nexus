@@ -127,6 +127,25 @@ HF 免费个人号旧 Docker hermes Space 因 2026-07 平台变更锁死:git pus
 - ⚠️ FROM ${ARG} HF 行为**未证实**(非"不可靠"):官方示例自身有 Docker 语义瑕疵(ARG 前 FROM 声明却在 FROM 后 RUN 用,需 stage 内重声明未写);社区唯一"失败"报告用 `printenv` 测法错(build-arg 按设计不显 ENV)
 - 结论:选硬编码浮动标签 `FROM ${BASE_IMAGE}` + ARG 默认值 `ghcr.io/i3t2y/nexus-base:stable` 兜底。理由=重建是不可再生资源(付费墙+配额稀缺),单程票文件只允许最大化验证特性,代价相同选确定性满分一方(Dockerfile 永不动)。详见 docs 查证章。
 
+### HF Storage Bucket vs Dataset(查证裁决,防概念混用双份)
+
+**查证来源:HF 官方 CLI 文档 + Hub 存储文档(2026-07 查证)**。两者是**完全独立存储产品,非组合关系**:
+
+| 维度 | Dataset | Storage Bucket |
+|------|---------|---------------|
+| 底层 | git-based repo,track file history | Xet 后端 S3-like object storage(非 git,无版本历史) |
+| 写入 | `api.upload_file` commit 进 git | `hf buckets sync/cp` 推对象 |
+| 读取 | `snapshot_download(repo_type="dataset")` 拉 git repo | Volume 挂载 `hf://buckets/owner/name` rw,或 `hf buckets sync remote local` CLI 拉 |
+| 挂载 | 官方明文"Models, datasets, Spaces are always mounted **read-only**" | 官方明文"Only storage buckets support **read-write** mounts"(rw 默认) |
+| 用途 | 版本化数据集 | "mutable storage such as checkpoints, logs, artifacts, doesn't need version control"(官方原话) |
+| 配额 | HF Hub repo 配额(git repo 限制) | Bucket 独立 SIZE 列计费(`hf buckets list` 返 SIZE/TOTAL_FILES/PRIVATE) |
+
+**官方 CLI 文档逐字(L606)**: "Buckets provide S3-like object storage on Hugging Face, powered by the Xet storage backend. Unlike repositories (which are git-based and track file history), buckets are remote object storage containers designed for large-scale files with content-addressable deduplication... simple, fast, mutable storage... doesn't need version control."
+
+**双份额度裁决**:Bucket 与 Dataset 后端不互通(git vs Xet),底层对象不共享 → 若同份数据既进 Bucket 又进同名 dataset repo = **双份存储双配额**。Nexus 永续改造**只用 Bucket**(逻辑层需 rw 且免 git history,正合 Bucket 场景),**不建 dataset repo**。
+
+**防哑火铁律**:拉 Bucket 必用 `hf buckets sync`(CLI),**禁用 `snapshot_download(repo_type="dataset")`**——后者找 git dataset repo,走不通 Bucket(若未建同名 dataset 则哑火;若建了则双份)。`hf` CLI 随 `huggingface_hub` 包(base 镜像已装)安装,故无新依赖。
+
 ### Hermes Agent ≠ HTTP 服务（查证修正）
 
 Nous Research 开源 Hermes Agent（`github.com/NousResearch/hermes-agent`，`curl install.sh | bash` 安装）是 **TUI/CLI 交互式 agent**，基于 `uv` 装在 `~/.hermes/`。`hermes gateway start` 指**消息平台网关**（Telegram/Discord 等），**不监听 HTTP 端口**，**无 `--port` 参数**。

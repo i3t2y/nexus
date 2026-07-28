@@ -18,7 +18,7 @@ LOG_DIR="${HERMES_LOG_DIR:-/data/logs}"
 # ─────────────────────────────────────────────────────────────
 # 等待 Bucket 挂载就绪(/data 仅 runtime,挂载于容器启动前完成)
 # 判断点:/data/libs/storage/__init__.py + /data/app/main.py 同存才进 uvicorn
-# 最多 30s;超时试 huggingface_hub bootstrap fallback 拉;仍败进 while 5s 自愈重试
+# 最多 30s;超时试 hf CLI bootstrap fallback 拉 Bucket;仍败进 while 5s 自愈重试
 # ─────────────────────────────────────────────────────────────
 wait_for_mount() {
   local key_pkg="$APP_DIR/libs/storage/__init__.py"
@@ -31,33 +31,27 @@ wait_for_mount() {
     fi
     sleep 1; waited=$((waited + 1))
   done
-  echo "[start] WARN: bucket mount not ready after ${waited}s, try huggingface_hub bootstrap fallback..."
+  echo "[start] WARN: bucket mount not ready after ${waited}s, try hf CLI bootstrap fallback..."
   return 1
 }
 
 bootstrap_from_bucket() {
-  # 兜底:挂载未达,试用 huggingface_hub 从 HF Storage Bucket 拉逻辑到 $APP_DIR
+  # 兜底:挂载未达,用 hf CLI 从 HF Storage Bucket 拉逻辑到 $APP_DIR。
+  # 查证(CLI 官方文档):Bucket 是 Xet 后端 S3-like object storage,非 git dataset repo。
+  #   - 拉 Bucket 用 `hf buckets sync remote local`(CLI 子进程),
+  #     非 snapshot_download(repo_type="dataset")(那是拉 git-based dataset repo,走不通 Bucket,哑火+若建同名 dataset repo 则双份存储)。
+  #   - huggingface_hub 1.x Python client 暂无 bucket pull 高层 API,故直接调 CLI。
   # 需 HF_TOKEN env。仅作兜底,正常路径靠 Volume 挂载直读。
   local token="${HF_TOKEN:-}"
   local owner="${HF_OWNER:-${SPACE_AUTHOR_NAME:-}}"
+  local bucket="${NEXUS_LOGIC_BUCKET:-nexus-logic}"
   [ -z "$token" ] && { echo "[start] bootstrap skip: no HF_TOKEN"; return 1; }
   [ -z "$owner" ] && { echo "[start] bootstrap skip: no HF_OWNER"; return 1; }
-  echo "[start] bootstrap: pulling nexus-logic bucket → $APP_DIR ..."
-  python - <<PYEOF || { echo "[start] bootstrap failed"; return 1; }
-import os, sys
-try:
-    from huggingface_hub import snapshot_download
-except Exception as e:
-    print(f"[bootstrap] huggingface_hub import fail: {e}"); sys.exit(1)
-owner = os.environ["HF_OWNER"]
-repo_id = f"{owner}/nexus-logic"
-try:
-    snapshot_download(repo_id=repo_id, repo_type="dataset", local_dir="$APP_DIR",
-                      token=os.environ["HF_TOKEN"])
-    print("[bootstrap] OK")
-except Exception as e:
-    print(f"[bootstrap] snapshot_download fail: {e}"); sys.exit(1)
-PYEOF
+  command -v hf >/dev/null 2>&1 || { echo "[start] bootstrap skip: no hf CLI"; return 1; }
+  echo "[start] bootstrap: pulling bucket ${owner}/${bucket} → $APP_DIR ..."
+  HF_TOKEN="$token" hf buckets sync "hf://buckets/${owner}/${bucket}" "$APP_DIR/" --no-delete \
+    || { echo "[start] bootstrap failed (hf buckets sync)"; return 1; }
+  echo "[start] bootstrap OK"
 }
 
 # 首启等挂载;失败试 bootstrap;仍败进 while 5s 自愈(非退出,保留容器存活)

@@ -96,6 +96,7 @@ python spaces/hermes/scripts/restore_from_r2.py --all
 **前提**：步骤 2.6 nexus-base 已推 GHCR :stable。
 
 1. HF 建 Storage Bucket `nexus-logic`（私有，rw；`hf buckets create nexus-logic --private`）。
+   > 查证(2026-07):Bucket 是 Xet 后端 S3-like 存储,**非 git dataset repo**。只建 Bucket,**勿建同名 dataset repo**(否则同 điều双份存储双配额)。改逻辑用 `sync-logic-bucket.sh`(hf buckets sync)推;挂载 rw /data 运行时直读。详见 ARCHITECTURE "Bucket vs Dataset" 节。
 2. HF Space Settings:
    - Storage/Volume 配置：挂 Bucket `nexus-logic` 到 `/data` rw（仅 runtime，build 期不可见）。
    - Secrets 加（同前）：
