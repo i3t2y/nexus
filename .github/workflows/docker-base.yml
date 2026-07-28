@@ -1,12 +1,11 @@
-# 构建/推送 Nexus GHCR base 镜像 ghcr.io/<owner>/nexus-base:stable
+# 构建/推送 Nexus GHCR base 镜像 ghcr.io/i3t2y/nexus-base:stable
 # 永续改造"镜像层":依赖打 base 镜像,各 Space Dockerfile ARG BASE_IMAGE=...:stable + FROM ${BASE_IMAGE} 引用。
 # 触发:手动 workflow_dispatch 或 push 涉 docker/** 变更(依赖升级时)
 # 前提:GitHub repo Settings → Actions → Workflow permissions 需 "Read and write permissions"
 #       (GHCR 推送需 GITHUB_TOKEN packages:write)
 #
-# 注意:owner 用 github.repository_owner 自动取 repo owner(即 GHCR 用户名);
-#       部署时各 Space Dockerfile 的 ARG BASE_IMAGE 默认值 ghcr.io/<owner>/nexus-base:stable
-#       的 <owner> 需与此 owner 一致。
+# 注意:owner 用 github.repository_owner 自动取 repo owner(即 GHCR 用户名=i3t2y);
+#       各 Space Dockerfile 的 ARG BASE_IMAGE 默认值已填 ghcr.io/i3t2y/nexus-base:stable 与此一致。
 name: Build & Push nexus-base (GHCR)
 
 on:

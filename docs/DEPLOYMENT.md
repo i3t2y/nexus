@@ -57,20 +57,20 @@ bash scripts/sync-spaces.sh --check  # 仅校验一致性（不写），不一�
 
 ## 步骤 2.6：构建 nexus-base 镜像并推 GHCR(hermes 永续改造前置,必做)
 
-hermes 及后续切 Bucket 的 Space 的 Docker build 引用 `ghcr.io/<owner>/nexus-base:stable` 作为 base。**HF push 前镜像必须在 :stable 存在**,否则 HF build 拉不到 base 失败。
+hermes 及后续切 Bucket 的 Space 的 Docker build 引用 `ghcr.io/i3t2y/nexus-base:stable` 作为 base。**HF push 前镜像必须在 :stable 存在**,否则 HF build 拉不到 base 失败。
 
-1. GitHub Create PAT(classic)勾 `write:packages`(或用 GITHUB_TOKEN,见 docker-base.yml workflow)。本地 `docker login ghcr.io -u <owner> -p <PAT>`。
+1. GitHub Create PAT(classic)勾 `write:packages`(或用 GITHUB_TOKEN,见 docker-base.yml workflow)。本地 `docker login ghcr.io -u i3t2y -p <PAT>`。
 2. 本地 build:
    ```bash
-   docker build -t ghcr.io/<owner>/nexus-base:stable -f docker/nexus-base.Dockerfile docker/
+   docker build -t ghcr.io/i3t2y/nexus-base:stable -f docker/nexus-base.Dockerfile docker/
    # 同时打版本标签作回退锚点
-   docker tag ghcr.io/<owner>/nexus-base:stable ghcr.io/<owner>/nexus-base:v0.1
-   docker push ghcr.io/<owner>/nexus-base:stable
-   docker push ghcr.io/<owner>/nexus-base:v0.1
+   docker tag ghcr.io/i3t2y/nexus-base:stable ghcr.io/i3t2y/nexus-base:v0.1
+   docker push ghcr.io/i3t2y/nexus-base:stable
+   docker push ghcr.io/i3t2y/nexus-base:v0.1
    ```
 3. GitHub repo → Packages → nexus-base → Package settings 设 Public(否则 HF build 拉 GHCR 需配 secret+docker login,复杂,建议公开 Nexus base 无敏感代码)。
 4. 或直接跑 `.github/workflows/docker-base.yml`(workflow_dispatch 手动触发),自动 build+push :stable(github.repository_owner 作 owner,GITHUB_TOKEN packages:write;需 repo Settings→Actions→Workflow permissions=Read and write)。
-5. 验证:`docker pull ghcr.io/<owner>/nexus-base:stable` 成功(本地或他机)。
+5. 验证:`docker pull ghcr.io/i3t2y/nexus-base:stable` 成功(本地或他机)。
 
 ## 步骤 2.7：备份恢复（R2 → Supabase 反向闭环，事故后用）
 
@@ -183,5 +183,5 @@ curl <hermes_url>/task/<task_id> -H "X-Nexus-Key: Bearer $NEXUS_API_KEY" -H "Aut
 
 - Space 出错 → Settings → Restart；代码回滚 `git push -f` 到上个 commit。
 - 表结构变更 → Supabase 先备份 → 改 SQL → 跑 `02_*.sql` 增量脚本。
-- **hermes 逻辑回退**: `sync-logic-bucket.sh` 推旧版逻辑覆盖 Bucket + Restart(不涉 git push HF);若需镜像回退=baseda 旧版,GHCR `docker push ghcr.io/<owner>/nexus-base:v0.1` 重新覆盖 :stable(留前版 :vN 标签作回退锚点)+ README 一字符 git push 重建。
+- **hermes 逻辑回退**: `sync-logic-bucket.sh` 推旧版逻辑覆盖 Bucket + Restart(不涉 git push HF);若需镜像回退=baseda 旧版,GHCR `docker push ghcr.io/i3t2y/nexus-base:v0.1` 重新覆盖 :stable(留前版 :vN 标签作回退锚点)+ README 一字符 git push 重建。
 - **Dockerfile 墓碑不动原则**:hermes Dockerfile 首切后永不改;ARG 默认值写死 :stable,回退走 GHCR 覆盖 :stable(不破墓碑)。

@@ -9,6 +9,9 @@ export PATH="$HOME/.local/bin:$PATH"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="/data/libs:${PYTHONPATH:-}"
 
+# 打印当前镜像版本(Dockerfile ENV BASE_IMAGE 转存;运维排查用)
+echo "[start] BASE_IMAGE=${BASE_IMAGE:-<unset-from-Dockerfile>}"
+
 APP_DIR="${HERMES_APP_DIR:-/data}"
 LOG_DIR="${HERMES_LOG_DIR:-/data/logs}"
 

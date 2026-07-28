@@ -64,7 +64,7 @@ nexus/
 ├── sql/
 │   ├── 00_schema.sql         # Supabase 基础表(幂等)
 │   └── 01_pgvector.sql       # 向量扩展(可选)
-├── docker/                   # GHCR base 镜像: nexus-base.Dockerfile + requirements-base.txt(依赖层,本地 build 推 ghcr.io/<owner>/nexus-base:stable)
+├── docker/                   # GHCR base 镜像: nexus-base.Dockerfile + requirements-base.txt(依赖层,本地 build 推 ghcr.io/i3t2y/nexus-base:stable)
 └── scripts/
     ├── sync-spaces.sh        # libs/ → 3 非 hermes Space 的 libs/(build 前必跑,hermes 例外)
     └── sync-logic-bucket.sh  # hermes 逻辑真源 → HF Storage Bucket nexus-logic(改逻辑后必跑+Restart,永不 git push HF)
@@ -102,7 +102,7 @@ Space URL 统一格式：`https://{owner}-{repo}.hf.space`。
 ```
 spaces/hermes/
 ├── README.md       # ← frontmatter 被 HF 当 Space config(title/sdk/app_port/tags...)
-├── Dockerfile      # 墓碑:ARG BASE_IMAGE=ghcr.io/<owner>/nexus-base:stable + FROM ${BASE_IMAGE},EXPOSE 7860,ENV PYTHONPATH=/data/libs;首切后永不动
+├── Dockerfile      # 墓碑:ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable + FROM ${BASE_IMAGE},EXPOSE 7860,ENV PYTHONPATH=/data/libs;首切后永不动
 （无 requirements.txt — 依赖进 GHCR base 镜像）
 ├── start.sh        # 仅 hermes:wait-for-mount /data + uvicorn --app-dir /data + 自愈循环
 ├── app/main.py     # 逻辑层 → HF Storage Bucket nexus-logic/(挂载 /data),不在镜像
@@ -384,7 +384,7 @@ OpenAI 兼容：`POST {OPENAI_BASE_URL}/chat/completions`，header `Authorizatio
 ### 改共享库
 - **3 非 hermes Space**(langgraph/claude-code/codex,暂走 git 副本 build context):改 `libs/` → 跑 `sync-spaces.sh` → 各 Space 重新部署。勿直接改 `spaces/*/libs/`(会被下次 sync 覆盖)。
 - **hermes**(永续改造,逻辑层进 Bucket):改 `libs/` 或 `spaces/hermes/app|scripts` → 跑 `bash scripts/sync-logic-bucket.sh`(推 HF Storage Bucket nexus-logic)→ Settings Restart(用缓存镜像,不触付费墙,永不 git push)。根 libs/ 仍是真源,CI 守此。
-- **升依赖**(hermes + 后续切 Bucket 的 Space):改 `docker/requirements-base.txt` → 本地 `docker build -t ghcr.io/<owner>/nexus-base:stable -f docker/nexus-base.Dockerfile docker/` + `docker push` 覆盖 :stable → 改 HF repo README 一字符 git push(用户手动,1 次过付费墙)。Dockerfile 墓碑永不动。
+- **升依赖**(hermes + 后续切 Bucket 的 Space):改 `docker/requirements-base.txt` → 本地 `docker build -t ghcr.io/i3t2y/nexus-base:stable -f docker/nexus-base.Dockerfile docker/` + `docker push` 覆盖 :stable → 改 HF repo README 一字符 git push(用户手动,1 次过付费墙)。Dockerfile 墓碑永不动。
 
 ### 加下游 Space
 1. 复制 `spaces/codex/` 结构改 `app/main.py` 端点
