@@ -1,0 +1,28 @@
+# ══════════════════════════════════════════════════════════════
+# [骨架留档·2026-07-29 标注] 本件为 omn 血统 litestream 配置模板,
+# 对 OmniRoute(SQLite)正用,对 Nexus(Supabase PostgreSQL)为技术误配⚠️:
+#   litestream 仅懂 SQLite WAL 复制,读不了 Supabase PostgreSQL 物理 WAL。
+#   Nexus 正解=Supabase daily backup + PITR add-on(Pro+ RPO 2min),
+#   免费档 supabase db dump 定时入 R2(逻辑导出非流式)。
+# 本件保留作 omn 速查,Nexus 现役数据库持久化走 R2+Supabase(persist_to_r2.py / restore_from_r2.py),
+# 不用此 litestream 配置。详见日志存放.md / Nexus集群永续架构最强模板.md §6 边界警示。
+# ALL secrets 走 env 注入, 本文件零硬码凭据(valid)
+# Nexus litestream.yml — 每组件独立 R2 bucket (永不双写)
+# ══════════════════════════════════════════════════════════════
+
+dbs:
+  - path: /data/${NEXUS_COMPONENT}.sqlite
+    replica:
+      type: s3
+      bucket: ${R2_BUCKET}
+      path: db/${NEXUS_COMPONENT}.sqlite
+      endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+      access-key-id: ${R2_ACCESS_KEY_ID}
+      secret-access-key: ${R2_SECRET_ACCESS_KEY}
+      region: auto
+      sync-interval: 10s
+      auto-recover: false
+
+snapshot:
+  interval: 1h
+  retention: 24h

@@ -1,0 +1,34 @@
+# ══════════════════════════════════════════════════════════════
+# [骨架留档·2026-07-29 标注] 本件为 omn 血统 sync-logic GitHub Action 模板,
+# 推 4 件 omn 逻辑件(entrypoint/gate/litestream/commit_scheduler)进 HF Dataset repo。
+# 与 omn 六件制对照(见 memory nexus-omn-merge-port-plan):omn 实际六件制 prod 用
+# sync-space-nomke.yml(仅 workflow_dispatch 显令,无 push) + dev 用 push paths 白名单,
+# 骨架与逻辑分离防业务件泄漏进 Space git 仓;本件为简化单件 canary 版。
+# Nexus 现役 sync 机制不同(走 scripts/sync-logic-bucket.sh 推 Bucket 非 Dataset,
+# commit a142da9/4fc098e);本件留作 omn workflow 速查。
+# 注:prod 永续 workflow 应仅 workflow_dispatch 显令(用户红线"git push 只能用户手动"),
+# push 自动触发仅在 dev 蓝图,且 HF 2026-07 免费层已禁建 Docker Space 使 dev/prod 双 Space 方针失效。
+# 红线检查:NEXUS_API_KEY/HF_TOKEN/R2_SECRET 等走 secretsexpression,零硬码 ✓。
+# ══════════════════════════════════════════════════════════════
+name: Sync Logic (canary)
+on:
+  push:
+    branches: [main]
+    paths: ['logic/**', '.github/workflows/sync-logic.yml']
+  workflow_dispatch:
+
+jobs:
+  sync-canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install huggingface_hub
+        run: pip install -q "huggingface_hub>=1.0,<2.0"
+      - name: Upload logic files to Canary Dataset
+        env: { HF_TOKEN: ${{ secrets.HF_TOKEN_DEV }} }
+        run: |
+          for f in entrypoint.sh gate.js litestream.yml commit_scheduler.sh; do
+            hf upload i3t2y/nexus-canary-logic "logic/$f" "$f" --repo-type dataset --token "$HF_TOKEN" --commit-message "sync(canary): ${GITHUB_SHA::7} $f"
+          done

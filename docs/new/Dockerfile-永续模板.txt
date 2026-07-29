@@ -1,0 +1,66 @@
+> **落地状态**: 本模板所述 ARG 作用域铁律 + ENV 转存已于 commit fe275ae / a142da9 落地于 `spaces/hermes/Dockerfile`（`ARG BASE_IMAGE` 全局声明 + `FROM ${BASE_IMAGE}` + `ARG BASE_IMAGE` 重声明 + `ENV BASE_IMAGE=${BASE_IMAGE}` 转存，GHCR owner 实填 i3t2y）。本文为该实践的设计依据留档。
+
+查证结论：官网所言属实，这是 Docker 的“作用域”硬规则。在 FROM 指令之后，必须重新声明 ARG 才能在 RUN、COPY 或 ENV 中使用该变量。
+根据 Docker 官方文档及 Hugging Face Spaces 的实测案例，ARG 的生命周期被 FROM 指令划分为两个完全隔离的区域。
+
+一、 核心作用域规则（铁律）​
+
+全局作用域（FROM 之前）​
+
+用途：仅用于 FROM 指令。
+限制：一旦进入 FROM 定义的构建阶段（Build Stage），全局 ARG 会立即失效。
+
+
+阶段作用域（FROM 之后）​
+
+要求：如果你想在 RUN echo $BASE_IMAGE 或 COPY 中引用这个变量，必须在 FROM 下方再次写一行 ARG BASE_IMAGE。
+原理：重新声明并不需要再次赋值，它会自动继承全局同名变量的值。 Dockerfile reference Using ARG in a Dockerfile - beware the gotcha
+
+
+二、 正确的 Nexus 永续配置模板
+如果你坚持使用 ARG 模式（虽然我建议硬编码以求最稳），正确的写法必须长这样：
+dockerfile下载复制# 1. 全局声明（为了让 FROM 能读到变量）（omniroute=nexuso，hermes=nexush，langgraph=nexusl，claudecode=nexuscc，codex=nexusc）
+ARG BASE_IMAGE=ghcr.io/i3t2y/nexush-base:stable
+
+# 2. 引用变量
+FROM ${BASE_IMAGE}
+
+# 3. 重新声明（为了让后续指令能读到变量，不带等号和值）
+ARG BASE_IMAGE
+
+# 4. 现在你可以在 RUN 或 ENV 中使用了
+RUN echo "当前构建使用的基础镜像是: ${BASE_IMAGE}"
+
+# 设置为运行时环境变量（可选，方便 start.sh 读取）
+ENV INSTALLED_IMAGE=${BASE_IMAGE}
+
+
+
+
+三、 为什么上轮说“不必加”？（逻辑澄清）​
+在上轮会话的特定上下文中，如果你在 FROM 之后没有任何指令（如 RUN、ENV）去引用 ${BASE_IMAGE} 这个字符串，那么步骤 3 的重声明确实是冗余的。
+但是，从“首席架构师”的严谨角度出发：​
+
+如果你想在日志里看到镜像名（方便排查版本）：必须加重声明。
+如果你想让 start.sh 知道自己跑在哪个镜像上​：​必须加重声明并转存为 ENV。
+如果你只是单纯想换基础镜像（FROM 引用）：不需要加重声明。
+
+
+四、 最终部署建议
+针对 Nexus 的“单程票”属性，我建议采用​“防御性编程”​风格：
+
+加上重声明：虽然目前 start.sh 不读它，但加上这行代码（ARG BASE_IMAGE）没有任何副作用，且能为未来的调试日志留出接口。
+转存为 ENV：建议在 Dockerfile 中加入 ENV BASE_IMAGE=${BASE_IMAGE}。这样你的 start.sh 就可以通过 echo $BASE_IMAGE 直接打印出当前运行的镜像版本，极大方便后期维护。
+
+总结：​ 官网没骗你，​“FROM 后想用全局 ARG 须重声明”​是标准动作。为了 Nexus 架构的完整性，请务必在 FROM 之后补上那行声明。 Dockerfile reference Huggingface Spaces - Tools in Data Science
+
+---
+
+**配套上下文（ARG 只是永续机制的一半）**
+
+ARG 作用域铁律仅解决"镜像层静态化"——切镜像永不改 Dockerfile。永续架构的另一半是**挂载层**：运行态逻辑/数据从 HF repo 解耦到外部存储，使改逻辑 = sync + Restart（永不 git push 触发付费墙 rebuild）。三件永不再改定态（Dockerfile/start.sh/README）配套**逻辑层只读执行 / 运行态写件 Bucket rw /data** 三轴分层（见 `Nexus集群永续架构最强模板.md` §1 三层解耦）。
+
+**与挂载相关的官方铁义（防本模板读者误解 ARG 即全部）**：
+- HF Dataset repo 挂载永远只读（manage-spaces Note 逐字："Models, datasets, and Spaces are always mounted as read-only. Only storage buckets support read-write mounts"）——逻辑层代码走 Dataset 只读挂载天然合 immutable，运行态写件（日志/checkpoint/状态）只能走 Bucket rw。
+- Dataset repo 有 git 版本化回滚锚（storage-buckets 对比表 "Full Git history" vs Bucket "None (mutable, overwrite-in-place)"）；改逻辑 = 1 commit = 1 不可变回退锚，`--revision` 参数接 commit SHA/git tag 锁定同点拉取（防 boot/sync 竞速拉旧池）。
+- **litestream 仅复 SQLite WAL**，跑不起 Postgres；Nexus 用 Supabase PostgreSQL 故 litestream 非其主路径（见 `日志存放.md` / `Nexus集群永续架构最强模板.md` §6 边界警示）。
