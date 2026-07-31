@@ -76,16 +76,16 @@ base 镜像 build :test 实测通(`naming to ghcr.io/i3t2y/nexus-base:test done`
 | R6 litestream WAL 不回退 DELETE | ✅ 通 | HF ext4 非 NFS;litestream replicate 起 pid 持续(V5 日志) |
 | R7 nemo-relay Rust 编译 | ✅ 通 | base build 装预编译 wheel,无源码编译 |
 | R4 uv pip vs base pip 覆盖 | ✅ 通 | fastapi/uvicorn hermes 区间与 base 固钉兼容 |
-| R1 omniroute 协议 + 鉴权头 + 模型名 | ⏸ 部署侧阻塞 | 需真 omniroute 凭据 curl 实测(HF Space Secrets,部署期 V2) |
+| R1 omniroute 协议 + 鉴权头 + 模型名 | ✅ 大部分通 | omniroute = 第 5 HF Space `nonoke/omn`(独立账号独立 Space 跑通,非仓内组件)。endpoint `https://nonoke-omn.hf.space`;暴露 anthropic Messages 兼容 API,glm-5.2/claude-sonnet-5 模型名透传接受(glm5.2 即本会话所用模型,经此 omniroute 出)。剩:HF Space Logs 抓一条 `POST /v1/messages` 200 锁死鉴权头(x-api-key vs Bearer) |
 | R5 运行时 lazy_deps 懒装 | ⏸ 部署期验 | 预装 anthropic + disabled_toolsets 列全,日志 grep `pip install` 确认无(部署 V8) |
 
 ## 6. 部署侧闸门(V9,不能本地跑,需真凭据)
 
 1. `bash scripts/sync-logic-bucket.sh` 推 Bucket(逻辑层 app/scripts/libs/sql)
 2. GHCR:本地 `docker build -t ghcr.io/i3t2y/nexus-base:stable -f docker/nexus-base.Dockerfile docker/` + push + 打 `:vN`(用户手动 1 次)
-3. HF Space Settings → Variables 填:`ANTHROPIC_API_KEY`+`ANTHROPIC_BASE_URL`+`HERMES_MODEL` + 现役 R2/Supabase/HF_TOKEN/NEXUS_API_KEY/下游 URL 全套
+3. HF Space Settings → Variables 填:`ANTHROPIC_BASE_URL=https://nonoke-omn.hf.space`+`ANTHROPIC_API_KEY`+`HERMES_MODEL=glm-5.2` + 现役 R2/Supabase/HF_TOKEN/NEXUS_API_KEY/下游 URL 全套
 4. HF Restart(用缓存 `:stable`,不 git push 不 rebuild)
 5. HF Logs 抓 boot:`bucket mounted OK` + `nexus plugin staged` + `config.yaml seeded` + `litestream restore` + `launching hermes on :7860` + `agent ready`
 6. 外部 curl `/health` 200 + `/run`(无 force,agent 自推理)200 + task_id
-7. V2 实测:curl 打 `ANTHROPIC_BASE_URL/v1/messages` 确认 omniroute 协议(x-api-key vs Bearer)+ 模型名接受;401 → 退 Bearer 或 custom/openrouter profile
+7. R1 收尾:HF Space Logs 抓一条 `POST /v1/messages` 200 锁死鉴权头(x-api-key vs Bearer);401 → 退 Bearer。omniroute 协议基线已验(`nonoke/omn` Space 跑通 + 本会话 glm5.2 经此出)
 8. 过夜不崩;R2 `nexus-checkpoints` 桶 `db/hermes-state.sqlite` 存在(litestream WAL 接力)

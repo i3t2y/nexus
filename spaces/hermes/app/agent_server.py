@@ -42,7 +42,7 @@ def _build_agent() -> Any:
             "(omniroute 入口 + 32 位 key 必填,HF Space Secrets 注入)"
         )
 
-    model = os.getenv("HERMES_MODEL", "claude-sonnet-5")
+    model = os.getenv("HERMES_MODEL", "glm-5.2")
     hermes_home = os.getenv("HERMES_HOME", "/data/.hermes")
     session_db = os.path.join(hermes_home, "state.db")
 
