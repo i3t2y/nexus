@@ -26,6 +26,11 @@ from storage import r2_client
 from shared.gateway import call_space
 from shared.errors import new_request_id, raise_nexus_error, log_event
 
+# Hermes Agent 内核(NousResearch hermes-agent,editable 装在 base 镜像 /opt/hermes-agent)。
+# 路径 B 主执行路径:_do_run 无 force_space 时交 agent_server.run_agent_once 智能决策调下游。
+# 相对 import:main.py 作 app.main(由 uvicorn --app-dir /data 解析),agent_server 是 app/ 同包兄弟。
+from .agent_server import run_agent_once
+
 # ── FastAPI 路由层 ──────────────────────────────────────────────────
 api = FastAPI(title="Hermes")
 _API_KEY = os.getenv("NEXUS_API_KEY", "")
@@ -198,30 +203,65 @@ async def run(
 async def _do_run(prompt: str, force: str | None = None, request_id: str | None = None) -> dict[str, Any]:
     """核心执行，被 HTTP 端点与 Dashboard 共用。
 
-    request_id 由 HTTP 端点传入；Dashboard 直接调时为 None（内部置生成）。透传给下游 call_space。
+    request_id 由 HTTP 端点传入；Dashboard 直接调时为 None（内部置生成）。透传给下游。
+
+    永续改造后两条路径:
+      - force_space 兜底(路 A):收 force 时跳 agent,直按现役 route()+call_space 调下游
+        (向后兼容老 dashboard 调用语义 + 显式指派 lane)。
+      - 主路径(路 B):无 force 时交 Hermes Agent 内核(agent_server.run_agent_once),
+        agent loop 自推理 + 按语义智能决策调 nexus_call_claude/codex/route_langgraph 三 tool
+        (注册为 hermes plugin toolset=nexus,桥到 call_space 调下游)。结果回写 agent 记忆。
     """
     import uuid
 
     rid = request_id or new_request_id(None)
     thread_id = str(uuid.uuid4())
-    space = route(prompt, force)
 
-    log_task(thread_id, "hermes", f"route→{space}", "pending", rid)
-    save_state(thread_id, {"prompt": prompt, "space": space, "phase": "dispatched"})
-    log_event(rid, _SPACE, "route", "dispatched", thread_id=thread_id, target=space)
+    # ── force 兜底(路 A):显式指派 → 跳 agent 直调下游。
+    # 保留现役 route() 关键词分发 + call_space,作 agent 兜底/向后兼容。
+    if force and force in _KEYWORDS:
+        space = force
+        log_task(thread_id, "hermes", f"route→{space}(forced)", "pending", rid)
+        save_state(thread_id, {"prompt": prompt, "space": space, "phase": "dispatched_forced"})
+        log_event(rid, _SPACE, "route", "dispatched", thread_id=thread_id, target=space, mode="forced")
+        try:
+            result = await call_space(space, _target_path(space), {"thread_id": thread_id, "prompt": prompt}, request_id=rid)
+        except Exception as e:  # noqa: BLE001
+            log_task(thread_id, space, "invoke", "error", rid)
+            save_state(thread_id, {"phase": "error", "err": str(e)})
+            log_event(rid, space, "invoke", "error", thread_id=thread_id, err=str(e))
+            return {"task_id": thread_id, "space": space, "error": str(e), "request_id": rid}
+        log_task(thread_id, space, "invoke", "done", rid)
+        save_state(thread_id, {"phase": "done", "downstream": space, "result": result, "mode": "forced"})
+        log_event(rid, space, "invoke", "done", thread_id=thread_id)
+        return {"task_id": thread_id, "space": space, "result": result, "request_id": rid}
 
+    # ── 主路径(路 B):Hermes Agent 内核智能决策。
+    save_state(thread_id, {"prompt": prompt, "phase": "agent_running", "mode": "agent"})
+    log_task(thread_id, "hermes", "agent", "pending", rid)
+    log_event(rid, _SPACE, "agent", "start", thread_id=thread_id)
     try:
-        result = await call_space(space, _target_path(space), {"thread_id": thread_id, "prompt": prompt}, request_id=rid)
+        result = await run_agent_once(prompt, thread_id, request_id=rid)
     except Exception as e:  # noqa: BLE001
-        log_task(thread_id, space, "invoke", "error", rid)
-        save_state(thread_id, {"phase": "error", "err": str(e)})
-        log_event(rid, space, "invoke", "error", thread_id=thread_id, err=str(e))
-        return {"task_id": thread_id, "space": space, "error": str(e), "request_id": rid}
+        log_task(thread_id, "hermes", "agent", "error", rid)
+        save_state(thread_id, {"phase": "error", "err": str(e), "mode": "agent"})
+        log_event(rid, _SPACE, "agent", "error", thread_id=thread_id, err=str(e))
+        return {"task_id": thread_id, "error": str(e), "request_id": rid, "mode": "agent"}
 
-    log_task(thread_id, space, "invoke", "done", rid)
-    save_state(thread_id, {"phase": "done", "downstream": space, "result": result})
-    log_event(rid, space, "invoke", "done", thread_id=thread_id)
-    return {"task_id": thread_id, "space": space, "result": result, "request_id": rid}
+    log_task(thread_id, "hermes", "agent", "done", rid)
+    save_state(thread_id, {
+        "phase": "done",
+        "mode": "agent",
+        "final_response": result.get("final_response"),
+        "tokens": result.get("tokens"),
+        "completed": result.get("completed"),
+    })
+    log_event(rid, _SPACE, "agent", "done", thread_id=thread_id,
+              completed=result.get("completed"), tokens=result.get("tokens", {}).get("total"))
+    # 扁平返(补 space 字段为 None 表 agent 自决,adb 与老客户端查 space 字段仍健在)
+    out = dict(result)
+    out.setdefault("space", None)
+    return out
 
 
 # ── 文件管理（R2，借鉴 HermesFace/HuggingMes 的 Dashboard 文件操作）─

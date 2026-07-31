@@ -1,0 +1,20 @@
+# litestream 配置:监 hermes-agent state.db 的 SQLite WAL → Cloudflare R2 复制
+# 永续铁律 L8:WAL 连续复制(非整库 dump),sync-interval 10s
+#
+# 源库:/data/.hermes/state.db(HERMES_HOME 重定向;HF ext4 非 NFS,WAL 不回退 DELETE)
+# 目标:复用 nexus-checkpoints 桶(与 langgraph save_checkpoint thread_id.json 同桶,路径不撞)
+# 恢复:litestream restore -config 本文件 → 原子 mv 到 state.db(start.sh boot 段做)
+#
+# 凭证经 env 注入(R2_* 同四 Space 现役通用 R2 凭证)
+dbs:
+  - path: /data/.hermes/state.db
+    replicas:
+      - type: s3
+        bucket: ${R2_CHECKPOINT_BUCKET}
+        path: db/hermes-state.sqlite
+        endpoint: ${R2_ENDPOINT}
+        access-key-id: ${R2_ACCESS_KEY_ID}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY}
+        region: ${R2_REGION:-auto}
+        # L8 WAL 接力,sync 10s(R2 free 层配额内,从不过载)
+        sync-interval: 10s

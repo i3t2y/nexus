@@ -23,3 +23,48 @@ langchain-core==0.3.40
 # === Bucket bootstrap fallback(hermes start.sh 挂载兜底拉逻辑用) ===
 # 用 1.x 稳定保守线;hf_hub_download/snapshot_download API 长期稳定
 huggingface_hub==1.0.1
+
+# === hermes-agent 核心传递依赖(NousResearch Hermes Agent,editable --no-deps 装)===
+# hermes-agent pyproject 全 exact-pin;editable install 用 --no-deps 防覆盖上面各 Space pin,
+# 故其核心依赖须在此手钉全(否则运行时 import run_agent 崩)。
+# 源:hermes-agent v2026.7.30 pyproject.toml [project] dependencies(core = every session)
+# 剔除:Windows-only marker 包(pywinpty/concurrent-log-handler/pywin32/tzdata win32)、
+#       hermes 传递但现 base 已有(fastapi/uvicorn[standard] 已在上面,版本在 hermes 兼容区间内)
+# 现有 httpx==0.28.1 已同版本,hermes 要 [socks] extra → 显式带 [socks] 补纯 python socksio
+openai==2.24.0
+certifi==2026.5.20
+python-dotenv==1.2.2
+fire==0.7.1
+httpx[socks]==0.28.1
+rich==14.3.3
+tenacity==9.1.4
+pyyaml==6.0.3
+ruamel.yaml==0.18.17
+requests==2.33.0
+jinja2==3.1.6
+pydantic==2.13.4       # hermes 要 2.13.4;fastapi 0.115.6 兼容
+prompt_toolkit==3.0.52
+croniter==6.0.0
+# packaging:hermes core 要 ==26.0,但 langchain-core==0.3.40(line21)钳 <25,>=23.2 相斥。
+# hermes --no-deps 装,其 packaging 约束运行时不强制;packaging 钩子 API(Version/Specifiers)自 14 稳定,
+# 24.x 满足 langchain。松 pin 到 <25 让三包共解(hemes 用 packaging 语法不破)。
+packaging>=23.2,<25
+Markdown==3.10.2
+PyJWT[crypto]==2.13.0  # PYSEC-2026-175/177/178/179
+urllib3>=2.7.0,<3
+cryptography==48.0.1   # CVE-2026-39892/34073;被 PyJWT[crypto] 拉,显式钉防漂
+psutil==7.2.2
+# websockets:hermes core 要 ==15.0.1,但 gradio-client 1.5.1 钳 <15,>=10 相斥。
+# hermes 核心不 import websockets(仅 feishu 插件 adapter.py 用,feishu 已在 disabled/extras 外不装/不启)。
+# hermes_logging.py:155 只把 "websockets" 当 logger 名串进 list,非 import。松到 <15 满足 gradio。
+websockets>=10.0,<15
+pathspec==1.1.1
+python-multipart>=0.0.9,<1   # gradio 拉,但 hermes dashboard 上传路径显式需;显式钉区间
+ptyprocess>=0.7.0,<1   # linux marker(posix)
+# Pillow:hermes 要 ==12.2.0(vision 缩图),但 gradio 5.9.1 钳 pillow<12 相斥。
+# 我们 disabled_toolsets 含 vision/image_generation,hermes Pillow 路径不触发,
+# 放弃 hermes 的 12.2.0 pin,交由 gradio 解析兼容 pillow<12(hermes 缩图代码同 API 仍可跑)
+# Pillow==12.2.0   # 略此 pin,随 gradio 解析
+# nemo-relay:NVIDIA Rust agent runtime binding(linux x86_64/aarch64),非 omniroute 路由。
+# hermes core dep;base 装 --no-deps 须手钉。platform marker 保 linux x86_64(HF amd64)
+nemo-relay>=0.6.0,<0.7; sys_platform == 'linux' and platform_machine == 'x86_64'
