@@ -6,6 +6,8 @@
 > 任何新 Nexus 节点照搬骨架件 + 按自身业务改逻辑层即可落地。
 >
 > **护栏纪律**: 本文 secret/token 值零入文，一律 env 占位名；测试用合成串；**git push 只能人工裁决，我永不自动 push HF**——本文 §7.2 骨架层 workflow 含 `git push --force` 自动化属 omn 血统模板叙述，部署前须改为 `workflow_dispatch` 显令点火（见修正项红线 + §7.2 注）。
+>
+> **组件血统实情(2026-07-29 核实)**: 本文继承自 omn-merge 五空间原型,§1 拓扑图/§2/§5 组件表含 `omniroute` 作五空间之一系 **omn 原型北区原貌**,非臆造亦非实装真组件。**Nexus 仓实装仅 4 组件**(`spaces/` = hermes/langgraph/claude-code/codex,**无 omniroute 目录**);`omniroute` 实指外部 `godiegosouzapw/OmniRoute` 模型路由网关,作 **Nexus 下游模型数据面后端独立部署调用不合码**(见 [[docs/archive/连接-gpt5.6sol.md]] "Agent→OmniRoute→Provider" 拓扑论证)。故拓扑图/组件表按 omn 原型原貌保留作速查;凡引 omniroute 行均应理解为外部下游组件血统参考,**不可当 Nexus 内建组件实施**(NEXUS_COMPONENT ARG 默认值 omniroute 同此,见 skeleton 注 + 部署/Dockerfile L32-33)。
 
 ---
 

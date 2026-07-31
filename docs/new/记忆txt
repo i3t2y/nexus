@@ -1,0 +1,70 @@
+以下是所有组件通过 Hermes 统一读写 Supabase + R2 的完整连接方案。核心连接方式Hermes 作为统一入口，其他组件（LangGraph、Claude Code、Codex）不直接访问 Supabase 和 R2，而是通过 Hermes 的 Tool 间接访问。这样做的好处：记忆统一管理
+权限控制简单
+降低风控风险
+方便调试
+
+1. 连接架构图（文字版）
+
+用户 / 外部请求
+        ↓
+    Hermes (主控 Space)
+        ├── Tool: supabase_tool → Supabase
+        ├── Tool: r2_tool → R2
+        ├── Tool: langgraph_call → LangGraph Space (HTTP)
+        ├── Tool: claude_call → Claude Code Space (HTTP)
+        └── Tool: codex_call → Codex Space (HTTP)
+
+2. 具体连接方法A. Hermes 内部 Tool 实现（核心）在 Hermes 中创建以下自定义 Tool：1. Supabase Tool（推荐）python
+
+# tools/supabase_tool.py
+from supabase import create_client
+
+supabase = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SERVICE_KEY")   # 用 service key 有更高权限
+)
+
+def save_memory(key: str, value: dict):
+    supabase.table("long_memory").upsert({
+        "key": key,
+        "value": value
+    }).execute()
+    return "记忆已保存"
+
+def get_memory(key: str):
+    result = supabase.table("long_memory").select("*").eq("key", key).execute()
+    return result.data[0] if result.data else None
+
+2. R2 Toolpython
+
+# tools/r2_tool.py
+import boto3
+
+r2 = boto3.client('s3',
+    endpoint_url=os.getenv('R2_ENDPOINT'),
+    aws_access_key_id=os.getenv('R2_ACCESS_KEY'),
+    aws_secret_access_key=os.getenv('R2_SECRET_KEY')
+)
+
+def save_checkpoint(thread_id: str, data: bytes):
+    r2.put_object(Bucket=os.getenv('R2_BUCKET'), Key=f"checkpoints/{thread_id}.json", Body=data)
+    return "Checkpoint 已保存到 R2"
+
+B. 其他组件通过 Hermes 调用LangGraph：暴露 HTTP API，Hermes 用 httpx 调用
+Claude Code / Codex：同样暴露 API 或直接通过 Hermes Tool 调用外部 API
+
+Hermes 负责把记忆读写请求转发给 Supabase / R2。3. 实际使用示例（在对话中）用户说：“帮我记住这个项目架构”Hermes 内部调用：python
+
+save_memory("project_architecture", {
+    "main": "Hermes",
+    "storage": "R2 + Supabase",
+    "components": ["LangGraph", "Claude", "Codex"]
+})
+
+这个方案的优势：所有记忆统一
+权限集中在 Hermes
+其他Space只需提供简单API即可
+易于扩展
+
+需要我给你完整 Tool 注册代码（Hermes 如何加载这些 Tool）还是LangGraph Space 的 API 示例？或者直接给你整个记忆连接的流程图 + 代码包？
+
