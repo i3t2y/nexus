@@ -168,6 +168,150 @@ C 路 "推翻 §12" 边界:hermes 侧立、omn 侧不立。
 
 故 C 路推翻 §12 在 omn 侧不立。
 
+## 10. nexus 4 组件架构第一性原理终审(满血 / 存储 / 通讯,2026-08-01)
+
+用户显令:claude-code、codex 满血;langgraph 是否需要满血?四组件是否都需要存储?四组件间该如何通讯?本节为该令首长终审,与 §5 存储介质终局接续 —— §5 定"挂什么介质",§10 定"组件本身是什么形态 + 如何对话"。
+
+### 10.0 物理基底:四组件各是什么
+
+| 组件 | 本质 | 性质 | 现役形态 |
+|------|------|------|---------|
+| **hermes** | 主控 / orchestrator | agent loop + tool 集合 + state.db | NousResearch Hermes Agent 内核,路 B 调下游 |
+| **claude-code** | 执行器 / executor | LLM 推理引擎 | **退化**:HTTP thin proxy 直打 Anthropic API |
+| **codex** | 执行器 / executor | LLM 推理引擎 | **退化**:HTTP thin proxy 直打 OpenAI API |
+| **langgraph** | 编排器 / orchestrator | graph orchestration + checkpointer | library 形态 in-process,Supabase Postgres saver |
+
+关键:hermes=指挥、langgraph=指挥、claude/codex=士兵。**两指挥 + 两士兵**,非四等并。
+
+### 10.1 满血三问
+
+**claude-code 满血 —— 要。** 现役 `spaces/claude-code/app/main.py:74` 直打 `/v1/messages` = 把 Claude Code 当 Messages API 用,打死只返文本。Claude Code 真身 = CLI agent loop:`claude -p --bare --allowedTools --output-format json --json-schema`,带 tool use、会话恢复、结构化输出、allowedTools 沙箱。现役扔掉全套 agent 能力只取一个推理 lane = 退化浪费。满血形态(阶段四方案二,见 §10.4)= 常驻 uvicorn 外壳 + 每任务 `subprocess` 起 `claude -p` 子进程 + ephemeral `/tmp` git worktree + wall-clock 超时 kill + JSON 结构化返 + patch 上 R2。
+
+**codex 满血 —— 要。** 同理。Context7 核 `/openai/codex` codex-rs/exec/src/cli.rs:`codex exec [opts] [prompt]` flag 集 = `--json`(JSONL)/`--output-schema FILE`(等 `claude --json-schema`)/`-C <dir>`(cwd 进 worktree)/`--ephemeral`/`-o`/`--output-last-message`/`resume --last`(等 `claude --resume`)/`--skip-git-repo-check`/`exec review` 子命令。与 `claude -p` **对等 dual 执行器** 契基。现役 `spaces/codex/app/main.py:72` 直打 `/chat/completions` 同退化。codex 可经 omniroute(`OPENAI_BASE_URL` env 现役已支持重指)。
+
+**langgraph 满血 —— 不要 CLI 化,有个"要不要上 Server 形态"的真问题。**
+
+先破概念混淆:langgraph 与 claude/codex 不同物。
+- claude/codex = LLM 推理引擎(provider)。满血 = 访问代码库 + tool loop + 结构化产出(执行器面)。
+- langgraph = orchestration framework(编排框架,非推理引擎)。它"满血"不指 CLI 化,指**用其真身编排能力**。
+
+现役 langgraph space:`graph.ainvoke()` + `AsyncPostgresSaver` checkpointer(`libs/shared/checkpointer.py:61`,见 §5)。**这已是 library 形态满血** —— StateGraph 真身 + Postgres checkpointer 跨 Space 状态续 + R2 blob 归档(`storage.py:48`)。无 CLI 可升。
+
+langgraph 有两形态(Context7 `langgraph dev/up` 核):
+- **library 形态(现役)**:`graph.ainvoke()` in-process + 自配 checkpointer。轻,与 HF Space 单进程共生。
+- **Server 形态**:`langgraph dev/up` 自带 durable execution runtime(Docker + `langgraph.json` config + Task Manager + Cron + Webhooks + Store API),崩溃续、定时、Webhook 触发。
+
+Server 增量价值窄 —— 现役 Postgres checkpointer 已给跨重启状态续(checkpoint 存 Supabase),Server 多给的是 runtime 级调度(Cron/Webhook),nexus 用 hermes 主控 loop 指挥已覆盖任务调度,Server 与 hermes 主控职能重叠且需 Docker 自管与 HF 单进程共生冲突。
+
+→ **判:langgraph 维持 library 形态。"满血"已达到(真身 StateGraph + Postgres saver)。** Server 化是阶段四以后选项,非必须。
+
+**满血语义三类不能一刀切:**
+- claude/codex 满血 = **升 CLI 执行器**(执行器面,现役退化须升)
+- langgraph 满血 = **用真身编排 + checkpointer**(编排面,现役已满)
+- hermes 满血 = **NousResearch Hermes Agent 内核**(已换装完成,见 [[hermes-agent-换装方案]])
+
+### 10.2 是否都需要存储
+
+按件分类配介质(三类介质第一性根,见 §3 + §5):
+
+| 组件 | Bucket(rw 挂载) | Dataset(git 仓) | R2(blob 持久) | Supabase(结构态) | GitHub 私库(源码) |
+|------|:-:|:-:|:-:|:-:|:-:|
+| **hermes** | ✅ 逻辑层 + state.db(litestream→R2) | ❌ GitHub 对冲封 | ✅ state.db WAL + 四表快照 | ✅ agent_states/task_queue | ✅ 逻辑层源 |
+| **claude-code** | ❌ 现役无;阶段四 worktree 是 ephemeral `/tmp` 非持久 | ❌ | ✅ 阶段四 patch_artifact 归档 | ✅ 任务 log | ✅ 项目真相源 |
+| **codex** | ❌ 同 claude-code | ❌ | ✅ 同上 | ✅ 同上 | ✅ 同上 |
+| **langgraph** | ❌ | ❌ | ✅ save_checkpoint `thread_id.json` | ✅ AsyncPostgresSaver(主态源) | ✅ 逻辑层源 |
+
+总判:
+- **Bucket = 仅 hermes**(及 omn IIb 件,见 §5)。三下游不需 —— 产出去 R2/Supabase,worktree 是一次性 ephemeral 非持久件(non-versioned 挂载对 ephemeral /tmp worktree 无增量价值)。
+- **R2 + Supabase = 四组件全共**,无例外。
+- **GitHub 私库 = 四组件全共**(逻辑层源 + 阶段四项目真相源)。
+- **Dataset = 全退役**(被 GitHub 私库 git 回滚锚对冲封,见 §2.1)。
+
+阶段四 worktree 真相源 = GitHub 私库 shallow clone ephemeral `/tmp`,完销;patch 上 R2 `nexus-artifacts`(见 HANDBOOK.md:186)。**真相源不在三下游长驻** —— 三下游是执行瞬态非真相归宿。
+
+### 10.3 四组件间通讯
+
+**现役 = 同步 HTTP 薄契约:**
+
+```
+hermes ──HTTP POST──> {claude-code /run, codex /complete, langgraph /execute}
+       经 call_space 透 {thread_id, prompt, request_id}
+       同步等返
+```
+
+`spaces/hermes/scripts/plugins/nexus/tools.py:_invoke_downstream` → `from shared.gateway import call_space`,`_TARGET_PATH={"claude":"/run","codex":"/complete","langgraph":"/execute"}`(见 [[hermes-agent-换装方案]])。
+
+现役契约 = 同步 HTTP,薄而脆:
+- 线索保险:`thread_id` + `request_id` 透传跨跳串联排障。
+- 状态:各 Space 自管无跨 Space 共享态。langgraph 状态锁 Supabase Postgres;hermes 状态锁 state.db + R2;claude/codex 薄返无状态。
+- 错误:fail-soft(Supabase 503 不冻 event loop,见 [[hermes-agent-coreswap-done]])。
+
+**阶段四应升 = 异步 + 统一任务 schema + 共享态表。**
+
+同步 HTTP 在 HF CPU-Basic 单进程下 wall-clock 紧(hermes agent loop `max_iterations` 已降 15-20 防 7860 超时,见 [[hermes-agent-coreswap-done]])。编码任务(子进程 CLI + worktree + 编译测试)分钟级,同步必超时。
+
+统一任务 schema(见 §10.4):
+
+```
+/execute_task (三下游统一契约)
+  入: {task_id, repository, base_revision, objective,
+       allowed_paths, allowed_commands, network_policy,
+       timeout_seconds, max_cost, expected_output_schema}
+  返: {task_id, status, base_revision, result_revision,
+       patch_artifact (R2 key), changed_files, tests}
+```
+
+异步流:
+```
+hermes 调 /execute_task(批交) → 下游 enqueue 起子进程 → hermes 轮询 GET /task/{tid} 或查 Supabase tasks 表
+跨 Space 状态经 Supabase 共享表: tasks {task_id, space, phase, result_r2_key}
+```
+
+**编排权归属 = dual orchestrator 分工(非重复)。**
+
+hermes + langgraph 两指挥职责正交:
+- **hermes = agent orchestrator(对话面)**:接用户 prompt → agent loop 决策 → 调下游 tool → 收结果回写记忆。主入口 + 任务级编排。
+- **langgraph = workflow orchestrator(工作流面)**:用户 Match1 意 —— LangGraph **按需编排**多步工作流。hermes 当 prompt 含规划/多步语义时,自己调 `nexus_route_langgraph` tool 交 langgraph 做 graph 级编排(状态机、分支、human-in-loop、checkpoint 续)。langgraph 节点反过来又可调 claude/codex 执行细节步(经同一 `call_space`)。
+
+dual orchestrator 链:
+```
+user → hermes (agent loop)
+         ├─[简单推理]→ 自己返
+         ├─[编码]→ nexus_call_claude / nexus_call_codex → {claude,codex} /execute_task
+         └─[规划/多步]→ nexus_route_langgraph → langgraph /execute
+                          └─[节点内编码]→ 调 claude/codex（经同一 call_space）
+```
+
+claude/codex 被两层都可调,**无回调 hermes,纯执行返 patch**。
+
+**状态真相源分层(无冗余双写,与 [[hermes-agent-换装方案]] 决策4 一致):**
+- conversation/messages → hermes state.db(主)+ R2 WAL(litestream 副本)
+- workflow graph state → langgraph AsyncPostgresSaver(主)
+- task phase/索引 → Supabase agent_states/task_queue(跨 Space 查询面)
+- patch artifact → R2 nexus-artifacts
+- 项目源 → GitHub 私库(worktree ephemeral,真相源远端)
+
+各件按属性配介质,无两介质做同件事。**Supabase 是跨 Space 唯一交汇点**(共享查询面),非真源转移(真源仍在各组件主库:hermes state.db / langgraph Postgres / R2 blob)。
+
+### 10.4 阶段四计划接入点(非本次,接入时回查)
+
+§10 满血 + 异步通讯结论接入阶段四候选(与 [[hermes-agent-换装方案]] §阶段 J 同一来源,此处补满血 + 通讯维度增量):
+
+- 三下游 Dockerfile 升墓碑 `ARG BASE_IMAGE` 形态(对齐 hermes 永续墓碑 + GHCR base + /data 挂载),逻辑层出镜像。
+- claude-code/codex `app/main.py` 加 `/execute_task` 端点接统一任务 schema → `subprocess` 起 `claude -p`/`codex exec` CLI 子进程(`--bare --allowedTools --output-format json --json-schema` / `--json --output-schema -C`)+ 独立 git worktree + wall-clock timeout kill + 解析结构化返 `{task_id,status,base_revision,result_revision,patch_artifact,changed_files,tests}`。
+- worktree 隔离:每任务 `git worktree add` 独立目录,完销毁;不用共享可写目录(防并行覆盖)。
+- `allowed_paths`/`allowed_commands`/`network_policy` 传 CLI flag + 容器层 seccomp/egress 限(若 HF 允许);超时 `subprocess` timeout + SIGTERM。
+- patch_artifact 上 R2(`nexus-artifacts` 桶)+ 记 Supabase `artifacts` 表。
+- hermes 侧三 tool 升级调下游 `/execute_task`(新契约),`force_space` 兜底继续指老契约。
+- 异步:三下游 `/execute_task` 即交即返 `accepted + task_id`,起子进程跑;hermes 轮询 `/task/{tid}` 或查 Supabase `tasks` 表读 phase;`request_id` 跨跳串联排障。
+- worktree 真相源 = GitHub 私库 shallow clone ephemeral `/tmp`,完销;非 Bucket 非 Dataset(Bucket 对 ephemeral worktree 无增量价值,见 §10.2)。
+
+Bucket-HA 单点(§8)对异步通讯无新解 —— 下游 Space 起不起仍依赖 HF 平台 + Bucket mount(hermes 侧),与本节通讯架构正交。
+
+### 10.5 一句话终审
+
+> claude/codex 要满血(升 CLI 子进程执行器,对等 dual);**langgraph 已满血**(library 形态真身 + Postgres checkpointer 即编排面满血,不需 CLI 化);四组件存储按件属性分:Bucket 仅 hermes,R2+Supabase+GitHub 全共,Dataset 全退役;通讯现役同步 HTTP 薄,阶段四升异步 + 统一 `/execute_task` 任务 schema + Supabase 共享态表;编排双轴分工(hermes 对话主入口 / langgraph 按需工作流),claude/codex 纯执行被两轴调无回调。
+
 ---
 
-关联:[[hermes-agent-换装方案]] [[nexus-agent-team判定]] [[nexus最新架构-查证]] [[nexus-hermes-bucket-perpetual]] [[nexus-hermes-dual-mount-dataset-bucket]]
+关联:[[hermes-agent-换装方案]] [[nexus-agent-team判定]] [[nexus最新架构-查证]] [[nexus-hermes-bucket-perpetual]] [[nexus-hermes-dual-mount-dataset-bucket]] [[nexus-hermes-agent-coreswap-done]]
