@@ -93,7 +93,9 @@ NEXUS_ROUTE_LANGGRAPH_SCHEMA = {
 }
 
 
-# ── 路径契约(同 main.py _target_path)──
+# ── 路径契约(同 main.py _target_path:182)──
+# ⚠️ 两处字面量复制无单一真理源:阶段四改下游契约(/execute_task 等)时必须两处同改,
+#    否则 agent 路改了 force 路漏改 / 或反之 → 404 割裂。阶段四前两路映射均指一致老契约,不阻当前部署。
 _TARGET_PATH = {
     "claude": "/run",
     "codex": "/complete",
@@ -101,22 +103,30 @@ _TARGET_PATH = {
 }
 
 
-async def _invoke_downstream(space: str, args: dict[str, Any], **_kw: Any) -> str:
+async def _invoke_downstream(space: str, args: dict[str, Any], **kw: Any) -> str:
     """统一桥到 call_space。三 handler 共用。
 
     handler 在 hermes _run_async 自建 loop 的 disposable thread 跑,
     await call_space(每次 httpx.AsyncClient context manager,无 loop-sticky client,安全)。
-    thread_id 缺省 给占位 "__nexus_tool_autogen__"(下游可选字段)。
+
+    thread_id 透传:优先 args["thread_id"],次 Hermes kw["task_id"](=上游 agent 的
+      run_conversation task_id, agent_server 已传 task_id=上游 thread_id),
+      缺省占位 "__nexus_tool_autogen__"。
+    request_id 透传:沿同 thread_id 作 rid 串全链路排障(路A 显式传 rid 对照,路B 此处补齐);
+      下游 new_request_id 收非空即复用不重生,跨 Space 串联不断。
     """
     prompt = args.get("prompt")
     if not prompt:
         return tool_error("prompt 是必填参数")
 
-    thread_id = args.get("thread_id") or "__nexus_tool_autogen__"
+    thread_id = args.get("thread_id") or kw.get("task_id") or "__nexus_tool_autogen__"
+    # request_id 透传:agent_server 调 run_conversation(task_id=thread_id) 时 kw 带 task_id;
+    # 作 rid 透传下游,跨 HR→claude 多跳串联排障。
+    request_id = kw.get("request_id") or thread_id
     payload = {"thread_id": thread_id, "prompt": prompt}
 
     try:
-        result = await call_space(space, _TARGET_PATH[space], payload)
+        result = await call_space(space, _TARGET_PATH[space], payload, request_id=request_id)
     except Exception as e:  # noqa: BLE001
         return tool_error(f"{space} 下游调用失败: {e}", space=space)
 

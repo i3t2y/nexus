@@ -114,7 +114,10 @@ if [ -n "${SUPABASE_URL:-}" ]; then
 fi
 
 # 后台：下游 Space 保活探测
-if [ -n "${KEEPALIVE_ENABLED:-0}" ] && [ "${KEEPALIVE_ENABLED:-0}" = "1" ]; then
+# 默认开:omniroute(主推理路径)+ 下游三 Space 均依赖保活防 48h 休眠;
+#  置 KEEPALIVE_ENABLED=0 可关。防 omniroute 休眠致路B首请冷启动超时。
+KEEPALIVE_ENABLED="${KEEPALIVE_ENABLED:-1}"
+if [ "$KEEPALIVE_ENABLED" = "1" ]; then
   echo "[start] keepalive daemon up"
   nohup python "$APP_DIR/scripts/keepalive.py" >"$LOG_DIR/keepalive.log" 2>&1 &
 fi

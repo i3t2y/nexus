@@ -95,10 +95,19 @@ async def enqueue(
     import uuid
 
     thread_id = str(uuid.uuid4())
-    space = route(body.prompt, body.force_space)
+    # 路由决策:有 force → 该 lane(路 A);无 force → "agent" 占位,
+    #   由 /dequeue 认领后交 Hermes Agent 智能决策(路 B)。
+    #   (原 route() 关键词分发致异步链结构性永不可达 agent 路——闭合此落差。)
+    if body.force_space and body.force_space in _KEYWORDS:
+        space = body.force_space
+    else:
+        space = "agent"
     created = enqueue_task(thread_id, space, {"prompt": body.prompt}, idempotency_key)
     log_task(thread_id, "hermes", f"enqueue→{space}", "queued", rid)
-    save_state(thread_id, {"prompt": body.prompt, "space": space, "phase": "queued"})
+    try:
+        save_state(thread_id, {"prompt": body.prompt, "space": space, "phase": "queued"})
+    except Exception as e:  # noqa: BLE001
+        log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(e), phase="queued")
     log_event(rid, _SPACE, "enqueue", "queued", thread_id=thread_id, target=space)
     # 幂等命中：返回已入队信息（不暴露既有 thread_id 避免越权；调用方靠 idempotency_key 查状态）
     if not created and idempotency_key:
@@ -127,17 +136,51 @@ async def dequeue(
     prompt = (job.get("payload") or {}).get("prompt", "")
     log_task(tid, "hermes", f"dequeue→{target_space}", "claimed", rid)
     log_event(rid, _SPACE, "dequeue", "claimed", thread_id=tid, target=target_space)
+    # 异步路闭合:space="agent"(无 force 入队)→ 交 Hermes Agent 内核(路 B),不再
+    #   困老 route() 关键词 lane。其余 space → 透传 call_space 调下游(路 A 一致)。
+    if target_space == "agent":
+        try:
+            result = await run_agent_once(prompt, tid, request_id=rid)
+            phase = "interrupted" if (result.get("final_response") and not result.get("completed")) else "done"
+            complete_task(tid, {"result": result}, status="done")
+            try:
+                save_state(tid, {"phase": phase, "mode": "agent", "completed": result.get("completed"),
+                                 "final_response": result.get("final_response"), "tokens": result.get("tokens")})
+            except Exception as se:  # noqa: BLE001
+                log_event(rid, _SPACE, "save_state", "error", thread_id=tid, err=str(se), phase=phase)
+            log_task(tid, "hermes", "agent", "done", rid)
+            log_event(rid, _SPACE, "agent", "done", thread_id=tid,
+                      completed=result.get("completed"), tokens=result.get("tokens", {}).get("total"))
+            out = dict(result); out.setdefault("space", None)
+            out["status"] = phase
+            out["request_id"] = rid
+            return out
+        except Exception as e:  # noqa: BLE001
+            complete_task(tid, {"error": str(e)}, status="error")
+            try:
+                save_state(tid, {"phase": "error", "err": str(e), "mode": "agent"})
+            except Exception as se:  # noqa: BLE001
+                log_event(rid, _SPACE, "save_state", "error", thread_id=tid, err=str(se), phase="error")
+            log_task(tid, "hermes", "agent", "error", rid)
+            log_event(rid, _SPACE, "agent", "error", thread_id=tid, err=str(e))
+            return {"task_id": tid, "space": None, "status": "error", "error": str(e), "request_id": rid}
     try:
         # 透传 request_id 给下游 Space，全链路同 rid 串联
         result = await call_space(target_space, _target_path(target_space), {"thread_id": tid, "prompt": prompt}, request_id=rid)
         complete_task(tid, {"result": result}, status="done")
-        save_state(tid, {"phase": "done", "downstream": target_space, "result": result})
+        try:
+            save_state(tid, {"phase": "done", "downstream": target_space, "result": result})
+        except Exception as se:  # noqa: BLE001
+            log_event(rid, _SPACE, "save_state", "error", thread_id=tid, err=str(se), phase="done")
         log_task(tid, target_space, "invoke", "done", rid)
         log_event(rid, target_space, "invoke", "done", thread_id=tid)
         return {"task_id": tid, "space": target_space, "status": "done", "result": result, "request_id": rid}
     except Exception as e:  # noqa: BLE001
         complete_task(tid, {"error": str(e)}, status="error")
-        save_state(tid, {"phase": "error", "err": str(e)})
+        try:
+            save_state(tid, {"phase": "error", "err": str(e)})
+        except Exception as se:  # noqa: BLE001
+            log_event(rid, _SPACE, "save_state", "error", thread_id=tid, err=str(se), phase="error")
         log_task(tid, target_space, "invoke", "error", rid)
         log_event(rid, target_space, "invoke", "error", thread_id=tid, err=str(e))
         return {"task_id": tid, "space": target_space, "status": "error", "error": str(e), "request_id": rid}
@@ -222,40 +265,71 @@ async def _do_run(prompt: str, force: str | None = None, request_id: str | None 
     if force and force in _KEYWORDS:
         space = force
         log_task(thread_id, "hermes", f"route→{space}(forced)", "pending", rid)
-        save_state(thread_id, {"prompt": prompt, "space": space, "phase": "dispatched_forced"})
+        try:
+            save_state(thread_id, {"prompt": prompt, "space": space, "phase": "dispatched_forced"})
+        except Exception as e:  # noqa: BLE001
+            log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(e), phase="dispatched_forced")
         log_event(rid, _SPACE, "route", "dispatched", thread_id=thread_id, target=space, mode="forced")
         try:
             result = await call_space(space, _target_path(space), {"thread_id": thread_id, "prompt": prompt}, request_id=rid)
         except Exception as e:  # noqa: BLE001
             log_task(thread_id, space, "invoke", "error", rid)
-            save_state(thread_id, {"phase": "error", "err": str(e)})
+            try:
+                save_state(thread_id, {"phase": "error", "err": str(e)})
+            except Exception as se:  # noqa: BLE001
+                log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(se), phase="error")
             log_event(rid, space, "invoke", "error", thread_id=thread_id, err=str(e))
             return {"task_id": thread_id, "space": space, "error": str(e), "request_id": rid}
         log_task(thread_id, space, "invoke", "done", rid)
-        save_state(thread_id, {"phase": "done", "downstream": space, "result": result, "mode": "forced"})
+        try:
+            save_state(thread_id, {"phase": "done", "downstream": space, "result": result, "mode": "forced"})
+        except Exception as e:  # noqa: BLE001
+            log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(e), phase="done")
         log_event(rid, space, "invoke", "done", thread_id=thread_id)
         return {"task_id": thread_id, "space": space, "result": result, "request_id": rid}
 
     # ── 主路径(路 B):Hermes Agent 内核智能决策。
-    save_state(thread_id, {"prompt": prompt, "phase": "agent_running", "mode": "agent"})
+    # save_state 防 Supabase 挂:save_state 是同步 supabase HTTP upsert,裸炸会阻塞
+    # uvicorn 单线程 event loop + 冒泡 500 致 agent 根本跑不起来。包 try fail-soft
+    # (状态索引是观测面,挂了不该拦 agent 主执行;路由路 A 同理)。
+    try:
+        save_state(thread_id, {"prompt": prompt, "phase": "agent_running", "mode": "agent"})
+    except Exception as e:  # noqa: BLE001
+        log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(e), phase="agent_running")
     log_task(thread_id, "hermes", "agent", "pending", rid)
     log_event(rid, _SPACE, "agent", "start", thread_id=thread_id)
     try:
         result = await run_agent_once(prompt, thread_id, request_id=rid)
     except Exception as e:  # noqa: BLE001
         log_task(thread_id, "hermes", "agent", "error", rid)
-        save_state(thread_id, {"phase": "error", "err": str(e), "mode": "agent"})
+        try:
+            save_state(thread_id, {"phase": "error", "err": str(e), "mode": "agent"})
+        except Exception as se:  # noqa: BLE001
+            log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(se), phase="error")
         log_event(rid, _SPACE, "agent", "error", thread_id=thread_id, err=str(e))
         return {"task_id": thread_id, "error": str(e), "request_id": rid, "mode": "agent"}
 
     log_task(thread_id, "hermes", "agent", "done", rid)
-    save_state(thread_id, {
-        "phase": "done",
-        "mode": "agent",
-        "final_response": result.get("final_response"),
-        "tokens": result.get("tokens"),
-        "completed": result.get("completed"),
-    })
+    try:
+        save_state(thread_id, {
+            "phase": "done",
+            "mode": "agent",
+            "final_response": result.get("final_response"),
+            "tokens": result.get("tokens"),
+            "completed": result.get("completed"),
+        })
+    except Exception as e:  # noqa: BLE001
+        log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(e), phase="done")
+    # 软退化:max_iterations 截断(completed=False)却标 done 误导。区分:
+    #   completed=False(如 turn_exit_reason=iteration_limit_reached) → phase=interrupted
+    #   让客户端见"未完成"而非伪 done。completed=True 才真 done。
+    if not result.get("completed") and result.get("final_response"):
+        try:
+            save_state(thread_id, {"phase": "interrupted", "completed": False, "mode": "agent"})
+        except Exception as e:  # noqa: BLE001
+            log_event(rid, _SPACE, "save_state", "error", thread_id=thread_id, err=str(e), phase="interrupted")
+        log_event(rid, _SPACE, "agent", "interrupted", thread_id=thread_id,
+                  completed=False, tokens=result.get("tokens", {}).get("total"))
     log_event(rid, _SPACE, "agent", "done", thread_id=thread_id,
               completed=result.get("completed"), tokens=result.get("tokens", {}).get("total"))
     # 扁平返(补 space 字段为 None 表 agent 自决,adb 与老客户端查 space 字段仍健在)
@@ -383,14 +457,20 @@ def _build_dashboard() -> gr.Blocks:
     return demo
 
 
-async def _do_run_sync(prompt: str, force: str | None) -> Any:
-    """Gradio 同步回调桥到 async。"""
+def _do_run_sync(prompt: str, force: str | None) -> Any:
+    """Gradio 同步回调桥到 async _do_run。
+
+    Gradio 回调跑在 AnyIO worker 线程,无当前事件循环——
+    asyncio.get_event_loop().run_until_complete 在 py3.10+ 此场景抛
+    "There is no current event loop in thread"。改 asyncio.run:
+    为当前线程新建临时事件循环,单次 run 后清理,AnyIO worker 线程安全。
+    """
     import asyncio
 
     if not prompt:
         return {"error": "prompt 为空"}
     force = force or None
-    return await asyncio.get_event_loop().run_until_complete(_do_run(prompt, force))
+    return asyncio.run(_do_run(prompt, force))
 
 
 async def _ping_all() -> dict[str, Any]:

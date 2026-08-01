@@ -35,6 +35,12 @@ _SPACES = {
     "claude": os.getenv("CLAUDE_URL", ""),
     "codex": os.getenv("CODEX_URL", ""),
 }
+# omniroute(模型平面)非下游 nexus Space,无 /health;是 anthropic-Messages 兼容端点。
+# 保活用最小 POST /v1/messages(max_tokens=1) ping,凭证 ANTHROPIC_API_KEY。
+# 缺 ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY 则跳(hermes 路B 也起不来,跳不增损)。
+_OMNI_BASE = os.getenv("ANTHROPIC_BASE_URL", "").rstrip("/")
+_OMNI_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+_OMNI_MODEL = os.getenv("HERMES_MODEL", "glm-5.2")
 
 
 def _space_headers() -> dict[str, str]:
@@ -46,6 +52,32 @@ def _space_headers() -> dict[str, str]:
     if os.getenv("HF_TOKEN"):
         h["Authorization"] = f"Bearer {os.getenv('HF_TOKEN')}"
     return h
+
+
+def probe_omniroute() -> tuple[str, str, str]:
+    """omniroute(模型平面)保活:最小 anthropic-Messages ping。返 (摘要, status, detail)。
+
+    omniroute 无 /health(非 nexus 下游 app),走 POST /v1/messages max_tokens=1。
+    复 omniroute 路径 = 防 hermes 主推理路B 首请冷启动超时(48h 不活动休眠)。
+    """
+    if not _OMNI_BASE or not _OMNI_KEY:
+        return ("omniroute: skip (no ANTHROPIC_BASE_URL/API_KEY)", "skip", "unconfigured")
+    try:
+        r = httpx.post(
+            f"{_OMNI_BASE}/v1/messages",
+            headers={
+                "x-api-key": _OMNI_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={"model": _OMNI_MODEL, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]},
+            timeout=20.0,
+        )
+        status = "ok" if r.is_success else "down"
+        return (f"omniroute: {r.status_code}", status, str(r.status_code))
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)[:200]
+        return (f"omniroute: DOWN ({msg})", "down", msg)
 
 
 _SUPA = None
@@ -112,6 +144,11 @@ def main() -> None:
                 _write_health(space, status, detail)
                 wrote_supabase = True
                 time.sleep(random.uniform(2, 8))  # 空间调用也加随机延时
+
+        # omniroute(模型平面)保活:ping /v1/messages 防 48h 休眠 → 防路B首请超时。
+        summary, status, detail = probe_omniroute()
+        print(f"[keepalive] {summary}", flush=True)
+        _write_health("omniroute", status, detail)
 
         # 即使没配下游 Space URL，也至少写一次 Supabase 保活自身（防 1 周暂停）。
         if not wrote_supabase:
