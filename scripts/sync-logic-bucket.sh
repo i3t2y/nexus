@@ -58,7 +58,7 @@ echo "[sync] staged: app + scripts + libs (排除 __pycache__)"
 find "$STAGE" -type f | wc -l | xargs echo "[sync] 文件数:"
 
 if [ "$MODE" = "push" ]; then
-  echo "[sync] → $DEST (flags: ${FLAGS[*]:-})"
+  echo "[sync] → $DEST (flags 含 --token <脱敏>,不回显)"
   hf buckets sync "$STAGE/." "$DEST" "${FLAGS[@]}"
   echo "[sync] 完成。Space Settings → Restart 即生效(不触发 rebuild,不触发付费墙)。"
   exit 0
