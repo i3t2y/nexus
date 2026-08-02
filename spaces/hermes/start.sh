@@ -93,14 +93,18 @@ done
 find "$HERMES_HOME/plugins" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # config.yaml 从模板生成(K 形态:platform_toolsets 三行 + plugins.enabled 两 plugin
-#   + disabled_toolsets + database.wournal_mode:wal)。不覆盖用户既有 config(其可能改过)。
-if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-  if [ -f "$APP_DIR/scripts/config.yaml.template" ]; then
+#   + disabled_toolsets + database.wournal_mode:wal)。
+# 永远覆盖:config 是 nexus 逻辑层管项(model.provider/platform_toolsets/plugins 单源),
+#   非用户可改 — sync-logic-bucket 推 Bucket 后 start 强制对齐,防旧 config 锁死 provider。
+if [ -f "$APP_DIR/scripts/config.yaml.template" ]; then
+  if [ ! -f "$HERMES_HOME/config.yaml" ] || ! cmp -s "$APP_DIR/scripts/config.yaml.template" "$HERMES_HOME/config.yaml"; then
     cp "$APP_DIR/scripts/config.yaml.template" "$HERMES_HOME/config.yaml"
-    echo "[start] config.yaml seeded from template (plugins + platform_toolsets)"
+    echo "[start] config.yaml updated from template (provider + platform_toolsets + plugins)"
   else
-    echo "[start] WARN: config.yaml.template missing, $HERMES_HOME/config.yaml not seeded"
+    echo "[start] config.yaml already in sync with template"
   fi
+else
+  echo "[start] WARN: config.yaml.template missing, $HERMES_HOME/config.yaml not seeded"
 fi
 
 # litestream 恢复 state.db(WAL→R2,铁律 L8):先 restore 到临时再原子 mv;
