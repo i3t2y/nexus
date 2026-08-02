@@ -25,17 +25,18 @@ plugins:
     - nexus-r2
     - nexus-ops
 
-# ── model 段:zai provider + omniroute base_url(原生 OpenAI /v1/chat/completions 兼容)──
-# glm-5.2 经 omniroute(第 5 HF Space nonoke/omn)出 → hermes 原生 zai provider 直指 omniroute。
-# provider=zai:OpenAI /v1/chat/completions 协议 + Bearer 鉴权(非 anthropic Messages x-api-key)。
-# base_url GAI 必带 /v1(OpenAI client 拼 /chat/completions 落 omniroute /v1/chat/completions)。
-# key = OPENAI_API_KEY env(omniroute Bearer),非本 yaml 配。
-# gateway start 期读此 model 段构造 AIAgent(provider=zai → _resolve_zai_base_url 取
-# model.base_url 或 GLM_BASE_URL env 无条件覆盖无白名单 + api_mode=chat_completions)。
+# ── model 段:openrouter provider + custom_providers omniroute ──
+# 用 openrouter provider(自由 base_url,无白名单限制)。
+# custom_providers 指 omniroute 入口,key_env=OPENAI_API_KEY。
+# model.default 用 `openrouter/<model>` 格式走 custom provider 路由。
+# 不走 zai/GLM(模型名避开 glm 前缀防静态路由触发)。
 model:
-  default: nvidia/z-ai/glm-5.2
-  provider: openai
-  base_url: https://nonoke-omn.hf.space/v1
+  default: openrouter/claude-sonnet-5
+  provider: openrouter
+custom_providers:
+  - base_url: https://nonoke-omn.hf.space/v1
+    key_env: OPENAI_API_KEY
+    name: omn
 
 # top-level(非 nested):各平台启用的 toolset 列表。
 # hermes-* 是平台自带 toolset; nexus 是 nexus-r2 注册的下游 bridge toolset。
