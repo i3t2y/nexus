@@ -52,7 +52,7 @@ bootstrap_from_bucket() {
   #   - huggingface_hub 1.x Python client 暂无 bucket pull 高层 API,故直接调 CLI。
   # 需 HF_TOKEN env。仅作兜底,正常路径靠 Volume 挂载直读。
   local token="${HF_TOKEN:-}"
-  local owner="${HF_OWNER:-${SPACE_AUTHOR_NAME:-}}"
+  local owner="${HF_OWNER:-}"
   local bucket="${NEXUS_LOGIC_BUCKET:-nexus-logic}"
   [ -z "$token" ] && { echo "[start] bootstrap skip: no HF_TOKEN"; return 1; }
   [ -z "$owner" ] && { echo "[start] bootstrap skip: no HF_OWNER"; return 1; }

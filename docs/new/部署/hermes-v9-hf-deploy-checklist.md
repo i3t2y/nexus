@@ -36,7 +36,7 @@ HF Space `sonoke/h` → Settings → Repository secrets(New secret 逐条加,值
 | `SUPABASE_SERVICE_ROLE_KEY` | `<service_role key>` | hermes 主入口写权(其余 Space 用 anon_key+RLS,见 03_rls_policies.sql) |
 | `SUPABASE_DB_URI` | `postgresql://postgres:<pwd>@db.sitqowffcgnaxbvmpzbf.supabase.co:6543/postgres?sslmode=require` | langgraph AsyncPostgresSaver 6543 transaction pooler;**选 `?sslmode=require` 非 `?pgbouncer=true`** — checkpointer.db_uri() 对已带 sslmode 尊重保留原样返回最干净;`pgbouncer` 参数对 langgraph psycopg3 冗余(from_conn_string 内部硬编码 prepare_threshold=0 已解 pooler 冲突,checkpointer.py:17-21)。密码占位 `<pwd>` 填真值不入 git(铁律 L4) |
 | `HF_TOKEN` | `<HF token w/ write>` | sync-logic-bucket 拉/推 Bucket + bootstrap fallback |
-| `SPACE_AUTHOR_NAME` | `sonoke` | bootstrap fallback 用(HF_OWNER 同义,须与 bucket namespace 一致) |
+| **`SPACE_AUTHOR_NAME`** | **(禁用,勿填)** | HF 保留字(`SPACE_*` 前缀 HF 系统独占,填进 Secrets 触发 `configuration error: Reserved environment variables`)。代码已改用 `HF_OWNER` 单源,start.sh:55 fallback 删除。owner 靠 `HF_OWNER=sonoke` 一条够 |
 | `NEXUS_LOGIC_BUCKET` | `logic` | bootstrap fallback 拉 bucket 名(须与真实 bucket `sonoke/logic` 名部分一致) |
 | `HF_OWNER` | `sonoke` | sync-logic-bucket.sh 推 bucket 的 namespace;bootstrap owner fallback 同义 |
 
