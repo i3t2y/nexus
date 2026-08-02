@@ -10,7 +10,7 @@ dbs:
   - path: /data/.hermes/state.db
     replicas:
       - type: s3
-        bucket: ${R2_CHECKPOINT_BUCKET}
+        bucket: ${R2_BUCKET}
         path: db/hermes-state.sqlite
         endpoint: ${R2_ENDPOINT}
         access-key-id: ${R2_ACCESS_KEY_ID}

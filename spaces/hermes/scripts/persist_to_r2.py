@@ -7,7 +7,7 @@
 
 环境变量：
   R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
-  R2_BACKUP_BUCKET  (默认 nexus-backups)
+  R2_BUCKET        (默认 nexus-checkpoints; 统一桶名)
   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
   SYNC_INTERVAL_SEC (默认 300 = 5分钟)
 
@@ -30,7 +30,7 @@ from botocore.config import Config  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 _INTERVAL = int(os.getenv("SYNC_INTERVAL_SEC", "300"))
-_BUCKET = os.getenv("R2_BACKUP_BUCKET", "nexus-backups")
+_BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
 # manifest 索引对象 key（R2 内单文件，列各表最新快照 sha256/size，便于 restore 找最新）
 _MANIFEST_KEY = "supabase-snapshot/_manifest.json"

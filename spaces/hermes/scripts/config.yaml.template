@@ -7,8 +7,8 @@
 #   - model 段(zai provider):glm-5.2 走 hermes 原生 `zai` provider(非 anthropic — anthropic
 #     provider base_url override 受白名单限制,hf.space 域过不去 + 协议错配 x-api-key vs Bearer)。
 #     zai 是 OpenAI /v1/chat/completions 兼容(Bearer 鉴权),直指 omniroute https://nonoke-omn.hf.space/v1。
-#     报错 `No usable credentials found for provider 'zai'. Set GLM_API_KEY,...` = 模型名含 glm
-#     静态路由(models.py:1278 glm→zai)→ 缺 GLM_API_KEY env。须 HF Secret 注 GLM_API_KEY(omniroute Bearer key)。
+#     报错 `No usable credentials found for provider 'zai'. Set OPENAI_API_KEY,...` = 模型名含 glm
+#     静态路由(models.py:1278 glm→zai)→ 缺 OPENAI_API_KEY env。须 HF Secret 注 OPENAI_API_KEY(omniroute Bearer key)。
 #     base_url 必带 /v1(否则 OpenAI client 拼错路径 404)。env 等价:GLM_BASE_URL 同值(无条件覆盖无白名单)。
 #   - dashboard.basic_auth 段(env 优先):HF 7860 公网绑须 BasicAuthProvider 接管鉴权(原生,
 #     kind: backend 自动加载)。env HERMES_DASHBOARD_BASIC_AUTH_{USERNAME,PASSWORD,SECRET} 缺则
@@ -29,12 +29,12 @@ plugins:
 # glm-5.2 经 omniroute(第 5 HF Space nonoke/omn)出 → hermes 原生 zai provider 直指 omniroute。
 # provider=zai:OpenAI /v1/chat/completions 协议 + Bearer 鉴权(非 anthropic Messages x-api-key)。
 # base_url GAI 必带 /v1(OpenAI client 拼 /chat/completions 落 omniroute /v1/chat/completions)。
-# key = GLM_API_KEY env(omniroute Bearer),非本 yaml 配。
+# key = OPENAI_API_KEY env(omniroute Bearer),非本 yaml 配。
 # gateway start 期读此 model 段构造 AIAgent(provider=zai → _resolve_zai_base_url 取
 # model.base_url 或 GLM_BASE_URL env 无条件覆盖无白名单 + api_mode=chat_completions)。
 model:
-  default: glm-5.2
-  provider: zai
+  default: nvidia/z-ai/glm-5.2
+  provider: openai
   base_url: https://nonoke-omn.hf.space/v1
 
 # top-level(非 nested):各平台启用的 toolset 列表。

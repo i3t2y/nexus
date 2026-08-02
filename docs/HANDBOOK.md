@@ -182,9 +182,9 @@ call_space 逻辑（`libs/shared/gateway.py`）：有 `GATEWAY_URL` 先经 Worke
 
 | 桶名 | env | 用途 |
 |------|-----|------|
-| nexus-checkpoints | `R2_CHECKPOINT_BUCKET` | LangGraph blob(`save_checkpoint`) |
-| nexus-artifacts | `R2_ARTIFACTS_BUCKET` | hermes Dashboard 文件管理 + 大产物 |
-| nexus-backups | `R2_BACKUP_BUCKET` | Supabase→R2 快照(`persist_to_r2.py` + `_manifest.json`；`restore_from_r2.py` 反向恢复) |
+| nexus-checkpoints | `R2_BUCKET` | LangGraph blob(`save_checkpoint`) |
+| nexus-artifacts | `R2_BUCKET` | hermes Dashboard 文件管理 + 大产物 |
+| nexus-backups | `R2_BUCKET` | Supabase→R2 快照(`persist_to_r2.py` + `_manifest.json`；`restore_from_r2.py` 反向恢复) |
 | nexus-skills | (代码未写env,表skills_index引用) | Skills 备份 |
 | nexus-vectors | (向量文件) | 向量 |
 
@@ -218,9 +218,9 @@ call_space 逻辑（`libs/shared/gateway.py`）：有 `GATEWAY_URL` 先经 Worke
 | R2_ACCESS_KEY_ID | ✓ | ✓ | ✓ | ✓ | | 同上 |
 | R2_SECRET_ACCESS_KEY | ✓ | ✓ | ✓ | ✓ | | 同上(Secret) |
 | R2_REGION | ✓ | ✓ | ✓ | ✓ | | 固定 `auto` |
-| R2_CHECKPOINT_BUCKET | | ✓ | | | | 桶名 |
-| R2_ARTIFACTS_BUCKET | ✓ | | | | | 桶名 |
-| R2_BACKUP_BUCKET | ✓ | | | | | 桶名 |
+| R2_BUCKET | | ✓ | | | | 桶名 |
+| R2_BUCKET | ✓ | | | | | 桶名 |
+| R2_BUCKET | ✓ | | | | | 桶名 |
 | SUPABASE_URL | ✓ | ✓ | ✓ | ✓ | (可选) | Project→API |
 | SUPABASE_SERVICE_ROLE_KEY | ✓ | ✓ | ✓ | ✓ | (可选) | 同上(服务端) |
 | SUPABASE_ANON_KEY | ✓ | ✓ | ✓ | ✓ | | 同上(低权限) |
@@ -413,7 +413,7 @@ langgraph `node_*` 是桩返回。真实接入在 `node_understand`/`node_plan`/
 | `prepared statement does not exist` | `SUPABASE_DB_URI` 用了 5432 session pooler；改 6543 transaction pooler。注意 `AsyncPostgresSaver.from_conn_string` 已硬编码 `prepare_threshold=0` 禁 server-side prepared statement，6543 安全，无需额外配置（见 `libs/shared/checkpointer.py` docstring） |
 | 401 unauthorized / HF 层 401 调私有 Space | 下游鉴权用 `X-Nexus-Key` 而非 `Authorization`（后者留给 HF 层 `HF_TOKEN`）；Worker 与 hermes 需配 `HF_TOKEN` 才能访私有 Space |
 | 下游 502/down | 先 `GET /health`；休眠则冷启动等数十秒；Worker 转发超时调 `AbortSignal.timeout` |
-| Dashboard 文件操作报错 | `R2_ARTIFACTS_BUCKET` 桶是否建；Secret 是否注入 |
+| Dashboard 文件操作报错 | `R2_BUCKET` 桶是否建；Secret 是否注入 |
 | hermes 崩溃不重启 | `start.sh` while 循环 5s 重启；查 `logs/persist.log`/`keepalive.log` |
 | 401 unauthorized | `NEXUS_API_KEY` 各组件不一致；header 名错（应 `X-Nexus-Key`，非 `Authorization`） |
 

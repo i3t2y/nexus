@@ -44,7 +44,7 @@ def r2_client():
 
 def save_checkpoint(thread_id: str, data: bytes | str, bucket: str | None = None) -> str:
     """保存 Checkpoint blob 到 R2。返回对象 key。"""
-    bucket = bucket or os.getenv("R2_CHECKPOINT_BUCKET", "nexus-checkpoints")
+    bucket = bucket or os.getenv("R2_BUCKET", "nexus-checkpoints")
     key = f"{thread_id}.json"
     body = data.encode() if isinstance(data, str) else data
     r2_client().put_object(Bucket=bucket, Key=key, Body=body)
@@ -55,7 +55,7 @@ def load_checkpoint(thread_id: str, bucket: str | None = None) -> bytes | None:
     """读取 Checkpoint。不存在返回 None。"""
     import botocore.exceptions
 
-    bucket = bucket or os.getenv("R2_CHECKPOINT_BUCKET", "nexus-checkpoints")
+    bucket = bucket or os.getenv("R2_BUCKET", "nexus-checkpoints")
     try:
         resp = r2_client().get_object(Bucket=bucket, Key=f"{thread_id}.json")
         return resp["Body"].read()
@@ -68,7 +68,7 @@ def load_checkpoint(thread_id: str, bucket: str | None = None) -> bytes | None:
 
 def presigned_get(thread_id: str, bucket: str | None = None, expires: int = 3600) -> str:
     """生成 Presigned GET URL，供外部临时读大产物。"""
-    bucket = bucket or os.getenv("R2_CHECKPOINT_BUCKET", "nexus-checkpoints")
+    bucket = bucket or os.getenv("R2_BUCKET", "nexus-checkpoints")
     return r2_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": f"{thread_id}.json"},

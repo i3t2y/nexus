@@ -33,8 +33,8 @@ HF Space `sonoke/h` → Settings → Repository secrets(New secret 逐条加,值
 | `R2_ENDPOINT` | `https://<account_id>.r2.cloudflarestorage.com` | litestream WAL→R2 + R2 文件 CRUD |
 | `R2_ACCESS_KEY_ID` | `<R2 key>` | R2 鉴权 |
 | `R2_SECRET_ACCESS_KEY` | `<R2 secret>` | R2 鉴权 |
-| `R2_CHECKPOINT_BUCKET` | `nexus-checkpoints` | litestream state.db WAL 副本所在桶 |
-| `R2_ARTIFACTS_BUCKET` | `nexus-artifacts` | nexus-r2 plugin dashboard 文件 CRUD 桶 |
+| `R2_BUCKET` | `nexus-checkpoints` | litestream state.db WAL 副本所在桶 |
+| `R2_BUCKET` | `nexus-artifacts` | nexus-r2 plugin dashboard 文件 CRUD 桶 |
 | `SUPABASE_URL` | `https://<id>.supabase.co` | nexus-ops plugin 业务表只读 + persist 四表 |
 | `SUPABASE_SERVICE_ROLE_KEY` | `<service_role key>` | hermes 主入口写权(其余 Space 用 anon_key+RLS,见 03_rls_policies.sql) |
 | `SUPABASE_DB_URI` | `postgresql://postgres:<pwd>@db.sitqowffcgnaxbvmpzbf.supabase.co:6543/postgres?sslmode=require` | langgraph AsyncPostgresSaver 6543 transaction pooler;**选 `?sslmode=require` 非 `?pgbouncer=true`** — checkpointer.db_uri() 对已带 sslmode 尊重保留原样返回最干净;`pgbouncer` 参数对 langgraph psycopg3 冗余(from_conn_string 内部硬编码 prepare_threshold=0 已解 pooler 冲突,checkpointer.py:17-21)。密码占位 `<pwd>` 填真值不入 git(铁律 L4) |

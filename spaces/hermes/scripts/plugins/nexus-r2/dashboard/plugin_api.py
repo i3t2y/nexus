@@ -4,7 +4,7 @@ Hermes dashboard 自动 mount `/api/plugins/nexus-r2/`(web_server._mount_plugin_
 返 R2 文件 CRUD:list / read / save(text) / delete / upload(multipart)。
 逻辑沿用 nexus main.py(旧 B 阶段)的 R2 helper,迁此成 plugin tab 后端。
 R2 client 经 libs/storage.r2_client(PYTHONPATH=/data/libs 同进程 import),
-bucket = R2_ARTIFACTS_BUCKET env(默认 nexus-artifacts)。
+bucket = R2_BUCKET env(默认 nexus-checkpoints; 统一桶名)。
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ except Exception:
 
 router = APIRouter()
 
-_R2_BUCKET = os.getenv("R2_ARTIFACTS_BUCKET", "nexus-artifacts")
+_R2_BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 
 
 def _r2():

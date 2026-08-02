@@ -36,12 +36,12 @@ _SPACES = {
     "codex": os.getenv("CODEX_URL", ""),
 }
 # omniroute(模型平面)非下游 nexus Space,无 /health;是 OpenAI /v1/chat/completions 兼容端点(Bearer 鉴权)。
-# 保活用最小 POST /v1/chat/completions(max_tokens=1) ping,凭证 GLM_API_KEY(= zai api_key = omniroute Bearer)。
-# base_url 走 GLM_BASE_URL(已带 /v1,与 config.yaml model.base_url + hermes zai provider 对齐);
+# 保活用最小 POST /v1/chat/completions(max_tokens=1) ping,凭证 OPENAI_API_KEY(= zai api_key = omniroute Bearer)。
+# base_url 走 OPENAI_BASE_URL(已带 /v1,与 config.yaml model.base_url + hermes zai provider 对齐);
 #   此前误用 anthropic Messages /v1/messages + x-api-key(omniroute 协议错配 anthropic 路死,已证伪改 zai)。
-# 缺 GLM_BASE_URL/GLM_API_KEY 则跳(hermes 主推理路也起不来,跳不增损)。
-_OMNI_BASE = os.getenv("GLM_BASE_URL", "").rstrip("/")
-_OMNI_KEY = os.getenv("GLM_API_KEY", "")
+# 缺 OPENAI_BASE_URL/OPENAI_API_KEY 则跳(hermes 主推理路也起不来,跳不增损)。
+_OMNI_BASE = os.getenv("OPENAI_BASE_URL", "").rstrip("/")
+_OMNI_KEY = os.getenv("OPENAI_API_KEY", "")
 _OMNI_MODEL = os.getenv("HERMES_MODEL", "glm-5.2")
 
 
@@ -60,12 +60,12 @@ def probe_omniroute() -> tuple[str, str, str]:
     """omniroute(模型平面)保活:最小 OpenAI chat-completions ping。返 (摘要, status, detail)。
 
     omniroute 无 /health(非 nexus 下游 app),走 POST /v1/chat/completions max_tokens=1。
-    OpenAI 兼容协议:Bearer 鉴权(非 anthropic x-api-key);base_url 走 GLM_BASE_URL(已带 /v1)。
+    OpenAI 兼容协议:Bearer 鉴权(非 anthropic x-api-key);base_url 走 OPENAI_BASE_URL(已带 /v1)。
     复 omniroute 路径 = 防 hermes 主推理(glm-5.2 经 zai→omniroute)首请冷启动超时(48h 不活动休眠)。
     """
     if not _OMNI_BASE or not _OMNI_KEY:
-        return ("omniroute: skip (no GLM_BASE_URL/GLM_API_KEY)", "skip", "unconfigured")
-    # GLM_BASE_URL 形如 https://nonoke-omn.hf.space/v1(已带 /v1),拼 /chat/completions。
+        return ("omniroute: skip (no OPENAI_BASE_URL/OPENAI_API_KEY)", "skip", "unconfigured")
+    # OPENAI_BASE_URL 形如 https://nonoke-omn.hf.space/v1(已带 /v1),拼 /chat/completions。
     # 若历史值无 /v1,rstrip 后再补(双兜底,容错旧配置)。
     base = _OMNI_BASE if _OMNI_BASE.endswith("/v1") else f"{_OMNI_BASE}/v1"
     try:

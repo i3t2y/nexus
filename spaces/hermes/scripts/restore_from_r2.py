@@ -29,7 +29,7 @@ import botocore.exceptions  # noqa: E402
 from botocore.config import Config  # noqa: E402
 from supabase import create_client  # noqa: E402
 
-_BUCKET = os.getenv("R2_BACKUP_BUCKET", "nexus-backups")
+_BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
 _MANIFEST_KEY = "supabase-snapshot/_manifest.json"
 # 主键列名（upsert on_conflict 需要）+ 空 pk 列用 insert 而非 upsert
