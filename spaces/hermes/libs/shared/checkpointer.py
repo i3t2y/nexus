@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 # langgraph-checkpoint-postgres 单独安装：pip install langgraph-checkpoint-postgres
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -40,15 +41,21 @@ def db_uri() -> str:
     额外强制 `sslmode=require`：Supabase pooler 实际已强制 TLS（pgBouncer），
     这里显式补上是纵深防御 + fail-closed（万一 URI 指非加密端点直接报错而非裸传）。
     若 URI 已带 sslmode 参数则尊重原值，不覆盖。
+
+    K2 修正(2026-08-02):改 urllib.parse 重构 query,非字符串拼接。
+    旧 `sep = "&" if "?" in uri else "?"` 在密码含 `?`/`&` 时误判分隔符致解析破
+    (理论风险,Supabase pass 安全字符集实操不触发,但深度防御):用 urlparse 拆,
+    parse_qsl 解既有 query 为 list,补 sslmode(未有时),urlencode 重组,
+    urlunparse 回拼——彻底避字符串探测歧义。
     """
     uri = os.getenv("SUPABASE_DB_URI")
     if not uri:
         raise RuntimeError("SUPABASE_DB_URI 未设置（需 Supabase connection string）")
-    # 已含 query 用 & 追加，否则用 ? 起头
-    if "sslmode=" in uri:
-        return uri  # 已显式指定，尊重部署方意图
-    sep = "&" if "?" in uri else "?"
-    return f"{uri}{sep}sslmode=require"
+    p = urlparse(uri)
+    q = parse_qsl(p.query, keep_blank_values=True)
+    if not any(k == "sslmode" for k, _ in q):  # 未显式指定才补
+        q.append(("sslmode", "require"))
+    return urlunparse(p._replace(query=urlencode(q, safe="")))
 
 
 @asynccontextmanager
