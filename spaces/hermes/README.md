@@ -17,49 +17,43 @@ tags:
 
 # Hermes — Nexus 主控内核
 
-Nexus 唯一入口。永续改造后换装 **NousResearch Hermes Agent** 作内核(github.com/NousResearch/hermes-agent):
-- 不再是自建关键词 route 分发——agent loop 默认调 omniroute 推理,按 prompt 语义智能决策调下游
-- 三个 custom tool(注册为 hermes plugin,toolset=`nexus`):
-  - `nexus_call_claude` —— 调 claude-code Space(实现/重构/调试 lane)
-  - `nexus_call_codex` —— 调 codex Space(补全/片段 lane)
-  - `nexus_route_langgraph` —— 调 langgraph Space(规划/多步工作流 lane)
-  - 三 tool 桥到现役 `libs/shared/gateway.call_space`,结果回写 agent 会话记忆
-- `force_space=` 兜底路:显式指派时跳 agent 直调下游(向后兼容老 dashboard + 指派 lane)
+Nexus 唯一入口。换装 **NousResearch Hermes Agent** 作内核(github.com/NousResearch/hermes-agent),全原生三组件(K 形态,实证推翻前自建框壳):
 
-主控位不变:仍收 `/run`、写 Supabase `task_logs`/`agent_states`、Gradio Dashboard 三 Tab(任务路由/文件管理 R2/系统状态)、保活/持久化后台守护。
+- **gateway(含 api_server adapter)** —— hermes 原生 gateway 同 async loop 起 platform adapter:HTTP `/v1/runs`(api_server,env `API_SERVER_KEY`≥16 触发)+ telegram + discord polling。**非自建** `agent_server.py` /run 框壳(已废)。
+- **dashboard SPA** —— hermes 原生 React19 Vite SPA(19 页),`web_server.start_server --port 7860` in-proc daemon thread 直监听(非 subprocess 避 cmdline 扫杀)。**非自建** Gradio 三 Tab(已废)。
+- **两 plugin tab** —— `nexus-r2`(R2 文件 CRUD tab + 三 tool 共 `nexus` toolset)+ `nexus-ops`(下游/业务表只读 tab,无 tool)。manifest `tab` single dict → 单 plugin 不可 2 tab,故两目录各 1 tab。
+- 三 tool 桥 `libs/shared/gateway.call_space` 调下游 claude-code/codex/langgraph,结果回写 agent 记忆。
+
+**boot**(main.py 极薄,非自建路由):daemon thread1 `asyncio.run(start_gateway)` 起 gateway 含 api_server + IM;daemon thread2 in-proc `web_server.start_server(host,port=7860,headless=True)` 起 dashboard SPA;主线程 while sleep 监死,任一 daemon 死 → SystemExit 1 让 HF/supervisor 重启。
 
 ## 永续架构(三条铁律)
 
 1. **逻辑层进 HF Storage Bucket `/data` rw 挂载** —— 改逻辑只推 Bucket + Restart,不触 HF rebuild 付费墙
 2. **Dockerfile 永续墓碑** —— `ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable` + 仅 `COPY start.sh`(逻辑层在镜像外)
-3. **依赖进 GHCR base 镜像** —— hermes-agent + 四 Space Python 蔓延依赖 + litestream 全在 base,逻辑层零 `pip install`
+3. **依赖进 GHCR base 镜像** —— hermes-agent + 蔓延依赖 + litestream + K-R6 自编 libsqlite3 3.53.4(≥3.51.3 防 fresh DB 强 DELETE 致 litestream 静默 off)+ K-R4 web_dist 预建 + messaging 子集(aiohttp/telegram/discord/brotlicffi)全在 base,逻辑层零 `pip install`
 
-state.db 经 litestream WAL→R2 复制(铁律 L8,sync 10s)续命;Supabase 四表经 `persist_to_r2.py` 快照(灾备,与 litestream 互补)。
+state.db 经 litestream WAL→R2 复制(铁律 L8)续命;Supabase 四表经 `persist_to_r2.py` 快照(灾备,与 litestream 互补)。
 
-## 端点
+## 端点(hermes 原生 api_server,非自建路由)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET  | `/health` | 存活探测(保活/唤醒) |
-| POST | `/run`   | 提交任务(agent 智能决策;带 `force_space` 直指下游) |
-| POST | `/enqueue` | 异步入队(带 `Idempotency-Key`) |
-| POST | `/dequeue` | 认领队首任务 |
-| GET  | `/state/{thread_id}` | 查任务 phase 摘要(Supabase 查询面) |
-| GET  | `/task/{thread_id}` | 查 task_queue 一行状态 |
+| GET  | `/v1/health` | 存活探测(api_server adapter) |
+| POST | `/v1/runs` | HTTP 任务入口,body `{"input":...}`(字段 `input` 非 `prompt`),返 `{"run_id","status":"started"}` |
+| GET  | `/v1/runs/{id}` | 查 run 状态/usage/messages |
+| GET  | `/v1/runs/{id}/events` | SSE 流:run.started → assistant.delta → **assistant.completed(content=最终文)** → run.completed(无 final_response,取 assistant.completed.content) |
+| POST | `/v1/chat/completions` | OpenAI 兼容 |
+| *    | `/api/plugins/nexus-r2/*` | R2 文件 CRUD(nexus-r2 plugin_api.py) |
+| *    | `/api/plugins/nexus-ops/*` | 下游探测 + Supabase 业务表只读(nexus-ops plugin_api.py) |
 
-## 路由(`force_space` 兜底 lane,与 agent 主路径并列)
-
-| force_space | 目标 Space | 触发 |
-|------------|-----------|------|
-| (空,默认) | —— | agent loop 自推理 + 按语义智能调三 nexus_* tool |
-| `claude` | claude-code `/run` | 显式指派编码 lane |
-| `codex` | codex `/complete` | 显式指派补全 lane |
-| `langgraph` | langgraph `/execute` | 显式指派编排 lane |
+`API_SERVER_KEY` 一键双用:触发 api_server 启用 + `/v1/*` Bearer 鉴权。
+dashboard SPA 7860 直监听;OAuth 闸门 K-R5(公网 0.0.0.0 须 auth provider,loopback 127.0.0.1 免)。
 
 ## Secrets
 
-见 `.env.example` + `docs/new/部署/hermes-agent-换装方案.md`。Hermes 需:
-- 全套 R2/Supabase + 下游 URL + `NEXUS_API_KEY` + `GATEWAY_URL`(现役,路 B 调下游用)
-- `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` + `HERMES_MODEL`(omniroute 接入,agent 推理用)
+见 `docs/new/部署/hermes-v9-hf-deploy-checklist.md`。全 HF Space Secrets 注入,不入 git(铁律 L4):
+- `ANTHROPIC_BASE_URL`=`https://nonoke-omn.hf.space` + `ANTHROPIC_API_KEY` + `HERMES_MODEL=glm-5.2`(omniroute)
+- `API_SERVER_KEY`(≥16 随机)+ `R2_*` + `SUPABASE_*` + `SUPABASE_DB_URI`(`?sslmode=require`)
+- `SPACE_AUTHOR_NAME=sonoke` + `NEXUS_LOGIC_BUCKET=logic` + `HF_TOKEN`(bootstrap 拉 `sonoke/logic` bucket)
+- IM(可选):`TELEGRAM_BOT_TOKEN`/`DISCORD_BOT_TOKEN`/`DISCORD_PROXY`/`TELEGRAM_PROXY`(K-R7 HF DNS 封靠 hermes 原生 DoH 自解 telegram)
 
-真值经 HF Space Secrets 注入,不入 git。
