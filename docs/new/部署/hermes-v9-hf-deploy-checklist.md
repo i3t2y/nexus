@@ -2,18 +2,19 @@
 
 > 本地 K 形态代码侧 + base 镜像闸门 + V5-V8 验全过(见 commit `8432594`)。
 > 此清单 = HF Space 真部署执行步骤(需真凭据,凭据不入 git,经 HF Space Secrets UI 注)。
-> 凭据侧我环境无 HF_TOKEN/HF_OWNER,此步**用户手填 UI + 自跑 sync + Restart**。
+> 凭据侧:V9 期用户填真实值(HF Space `sonoke/h` + bucket `sonoke/logic`,替旧虚拟 `i3t2y/hermes` 占位)。
+> sync-logic-bucket 需 HF_TOKEN(有写 sonoke/logic 权)+ HF_OWNER=sonoke + NEXUS_LOGIC_BUCKET=logic 三 env。
 
 ## 前置:本地已完成(我执行)
 
 - [x] commit `8432594`(K 形态主代码 + base 镜像改 + V5-V8 验)
 - [x] `ghcr.io/i3t2y/nexus-base:stable` 本地 build + push GHCR(2.84GB,含 K-R6 sqlite 3.53.4 + K-R4 web_dist + messaging 子集)
 - [x] git push 分支 `feat/hermes-coreswap-nousresearch` 到 GitHub
-- [ ] HF Space `i3t2y/hermes` Settings README 改一字符触发 rebuild 拉 :stable(下步)
+- [ ] HF Space `sonoke/h` Settings Sources 同步分支改指 `feat/hermes-coreswap-nousresearch`(K 形态在此分支非 main)+ README 改一字符触发 rebuild 拉 :stable(下步)
 
 ## 步骤 1:HF Space Secrets 注入(HF Space Settings → Variables and secrets)
 
-HF Space `i3t2y/hermes` → Settings → Repository secrets(New secret 逐条加,值不入 git):
+HF Space `sonoke/h` → Settings → Repository secrets(New secret 逐条加,值不入 git):
 
 ### 必填(缺则 boot 崩或功能缺)
 
@@ -35,7 +36,9 @@ HF Space `i3t2y/hermes` → Settings → Repository secrets(New secret 逐条加
 | `SUPABASE_SERVICE_ROLE_KEY` | `<service_role key>` | hermes 主入口写权(其余 Space 用 anon_key+RLS,见 03_rls_policies.sql) |
 | `SUPABASE_DB_URI` | `postgresql://postgres:<pwd>@db.sitqowffcgnaxbvmpzbf.supabase.co:6543/postgres?sslmode=require` | langgraph AsyncPostgresSaver 6543 transaction pooler;**选 `?sslmode=require` 非 `?pgbouncer=true`** — checkpointer.db_uri() 对已带 sslmode 尊重保留原样返回最干净;`pgbouncer` 参数对 langgraph psycopg3 冗余(from_conn_string 内部硬编码 prepare_threshold=0 已解 pooler 冲突,checkpointer.py:17-21)。密码占位 `<pwd>` 填真值不入 git(铁律 L4) |
 | `HF_TOKEN` | `<HF token w/ write>` | sync-logic-bucket 拉/推 Bucket + bootstrap fallback |
-| `SPACE_AUTHOR_NAME` | `i3t2y` | bootstrap fallback 用(HF_OWNER 同义) |
+| `SPACE_AUTHOR_NAME` | `sonoke` | bootstrap fallback 用(HF_OWNER 同义,须与 bucket namespace 一致) |
+| `NEXUS_LOGIC_BUCKET` | `logic` | bootstrap fallback 拉 bucket 名(须与真实 bucket `sonoke/logic` 名部分一致) |
+| `HF_OWNER` | `sonoke` | sync-logic-bucket.sh 推 bucket 的 namespace;bootstrap owner fallback 同义 |
 
 ### 下游 Space URL(hermes 经 call_space tool 调下游)
 
@@ -61,13 +64,19 @@ HF Space `i3t2y/hermes` → Settings → Repository secrets(New secret 逐条加
 
 ```bash
 cd /home/laisi/nexus
-export HF_TOKEN=<your HF token>
-export HF_OWNER=i3t2y  # 或 SPACE_AUTHOR_NAME
-bash scripts/sync-logic-bucket.sh
+# 路1(推荐 防混淆):用 ~/.env.sonoke 模板(600 权,git 不扫)
+source ~/.env.sonoke   # 含 HF_TOKEN + HF_OWNER=sonoke + NEXUS_LOGIC_BUCKET=logic
+# 路2(inline 临时):手 export 三维
+# export HF_TOKEN=<你的 hf_ token> HF_OWNER=sonoke NEXUS_LOGIC_BUCKET=logic
+bash scripts/sync-logic-bucket.sh --dry-run  # 先预览
+bash scripts/sync-logic-bucket.sh            # 真推
+bash scripts/sync-logic-bucket.sh --verify    # 拉 bucket 验内容
+unset HF_TOKEN HF_OWNER NEXUS_LOGIC_BUCKET    # 用完清防泄漏
 ```
 
-推 `spaces/hermes/{app,scripts,libs,sql,start.sh}` 进 HF Bucket `i3t2y/nexus-logic`。
+推 `spaces/hermes/{app,scripts,libs}` 进 HF Bucket `sonoke/logic`(非旧占位 `i3t2y/nexus-logic`)。
 HF Space 容器挂此 Bucket rw `/data`,逻辑层从挂载读(改逻辑只推 Bucket+Restart 不触 rebuild)。
+`.env.sonoke` 模板防混淆(在 `~` 不在 repo + 600 权 + git 不扫,见记忆)。
 
 ## 步骤 3:HF Space README 改一字符触发 rebuild 拉 :stable
 
@@ -78,8 +87,8 @@ git -C /home/laisi/nexus commit -m "deploy: 触发 HF rebuild 拉 nexus-base:sta
 git -C /home/laisi/nexus push origin feat/hermes-coreswap-nousresearch
 ```
 
-HF Space `i3t2y/hermes` README.md 改动 → HF 触发 rebuild。
-Dockerfile `ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable` → 拉 GHCR :stable(已 push)+ `COPY start.sh` → 镜像建(用缓存 base 不重装 deps)。
+HF Space `sonoke/h` 同步 `feat/hermes-coreswap-nousresearch` 分支 GitHub → push 触发 HF rebuild(GitHub repo 同步建)。
+Dockerfile `ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable` → 拉 GHCR :stable(已 push,public 可拉已验 exit 0)+ `COPY start.sh` → 镜像建(用缓存 base 不重装 deps)。
 
 ## 步骤 4:HF Space Restart + 外部 cron 保活
 
@@ -98,7 +107,7 @@ HF Space 建/Restart 后:
 
 ```bash
 # 任意外部 cron 服务(crontab/UptimeRobot/cron-job.org)每 5-10min ping:
-curl -fsS https://i3t2y-hermes.hf.space/health
+curl -fsS https://sonoke-h.hf.space/health
 # 期望 {"status":"ok","platform":"hermes-agent","version":"0.19.1"}(api_server /v1/health)
 # 或 dashboard 7860 SPA HTML(/health 路由同壳)
 ```
@@ -108,14 +117,14 @@ curl -fsS https://i3t2y-hermes.hf.space/health
 ```bash
 # 5a. /v1/runs HTTP 任务入口(deep 偏差2:body input 非 prompt)
 KEY=<步骤1 填的 API_SERVER_KEY>
-curl -s -X POST https://i3t2y-hermes.hf.space/v1/runs \
+curl -s -X POST https://sonoke-h.hf.space/v1/runs \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"input":"reply with exactly: pong"}'
 # 期望 {"run_id":"run_<hex>","status":"started"}
 
 # 5b. deep 偏差3:run.completed 无 final_response,取 assistant.completed.content
 RID=<5a 返回的 run_id>
-curl -s -N https://i3t2y-hermes.hf.space/v1/runs/$RID/events \
+curl -s -N https://sonoke-h.hf.space/v1/runs/$RID/events \
   -H "Authorization: Bearer $KEY"
 # 期望 SSE 流:run.started → assistant.delta... → assistant.completed(content=final) → run.completed(usage 无 final_response)
 # 取 assistant.completed 事件 content 字段 = 最终文本(非 run.completed)
