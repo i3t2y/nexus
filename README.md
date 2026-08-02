@@ -1,7 +1,7 @@
 # Nexus
 
 混合 Agent 系统：HF Spaces 计算 + Cloudflare R2 大文件 + Supabase Postgres 结构化状态。
-Hermes 主控 + LangGraph 编排 + Claude/Codex 强推理。
+Nexus 主控 + LangGraph 编排 + Claude/Codex 强推理。
 
 > 当前状态：**模板阶段**。代码可直接部署，凭证就位后填 `.env` / Space Secrets 即跑。
 > 凭证未真填，不含任何密钥。
@@ -19,7 +19,7 @@ nexus/
 │   ├── storage/
 │   └── shared/
 ├── spaces/            # 4 个 HF Space 模板（各自独立 build context）
-│   ├── hermes/        # 主控大脑
+│   ├── hermes/        # 主控大脑(目录名hermes保留,内部代号)
 │   ├── langgraph/     # 编排（AsyncPostgresSaver）
 │   ├── claude-code/   # 强推理
 │   └── codex/         # 快速编码
@@ -42,12 +42,12 @@ bash scripts/sync-spaces.sh
 
 # 4. 部署 Worker：cd workers/gateway && npx wrangler deploy
 
-# 5. 端到端：curl POST <hermes_url>/run -d '{"prompt":"测试规划"}'
+# 5. 端到端：curl POST <main_url>/run -d '{"prompt":"测试规划"}'
 ```
 
-## 增强机制（Hermes Space）
+## 增强机制（主控 Space）
 
-借自 HermesFace / HuggingMes 两项目，已转 R2+Supabase 版集成进 Hermes Space：
+借自社区同类项目，已转 R2+Supabase 版集成进主控 Space：
 
 - **保活**：主靠外部监测网站 ping `/health`（已验稳定）；辅是 Worker cron + `keepalive.py` 内部互探，间隔随机化避免固定周期。
 - **自愈**：`start.sh` while 循环重启崩溃的 app。
