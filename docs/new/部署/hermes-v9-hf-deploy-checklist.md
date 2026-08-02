@@ -20,13 +20,16 @@ HF Space `sonoke/h` → Settings → Repository secrets(New secret 逐条加,值
 
 | Secret 名 | 值 | 必填原因 |
 |---|---|---|
-| `ANTHROPIC_BASE_URL` | `https://nonoke-omn.hf.space` | omniroute 第5 Space 入口,hermes provider=anthropic profile 指 |
-| `ANTHROPIC_API_KEY` | `<omniroute 真 32char key>` | omniroute 鉴权;hermes 调 glm-5.2 经此 |
-| `HERMES_MODEL` | `glm-5.2` | omniroute 透传模型 id |
+| `GLM_BASE_URL` | `https://nonoke-omn.hf.space/v1` | omniroute 第5 Space 入口;zai provider base_url override,**必带 /v1**(OpenAI client 拼 /chat/completions 落 omniroute /v1/chat/completions,缺 /v1 落 404)。env 等价于 config.yaml `model.base_url` |
+| `GLM_API_KEY` | `<omniroute 真 Bearer key>` | omniroute 鉴权(= zai api_key,Bearer 头);hermes 调 glm-5.2 经此。**非 ANTHROPIC_API_KEY** — glm-5.2 走 hermes 原生 `zai` provider(OpenAI 协议),非 anthropic(anthropic base_url override 受白名单排拒 hf.space + 头错配 x-api-key vs Bearer) |
+| `HERMES_MODEL` | `glm-5.2` | 原生仅 cron scheduler 读(cron/scheduler.py:3158)];交互/oneshot 默认模型靠 config.yaml `model.default`(本模板已设同值 glm-5.2)。glm 名含 → 静态路由(models.py:1278 glm→zai)→ provider=zai → 查 GLM_API_KEY → 缺则报 `No usable credentials found for provider 'zai'` |
 | `API_SERVER_KEY` | `<≥16 字符随机串>` | api_server adapter 真触发器 + /v1/* Bearer 鉴权(同 key 双用) |
 | `NEXUS_AUTH_MODE` | 留空 | 生产 fail-closed(缺 NEXUS_API_KEY 拒);本地 dev 才设 dev |
 | `PORT` | `7860` | HF 要求监听端口;dashboard 直监听非反代 |
-| `DASHBOARD_BIND_HOST` | `0.0.0.0` | HF 公网绑须 auth provider(K-R5);若先不配 OAuth 暂用 127.0.0.1 但外网不可达 |
+| `DASHBOARD_BIND_HOST` | `0.0.0.0` | HF 公网绑须 auth provider;此值=非 loopback → auth gate 开 → BasicAuthProvider 接管 /login 密码表 |
+| `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` | `<用户名,如 admin>` | dashboard 密码闸门(原生 BasicAuthProvider,bundled 自动加载);缺三件任一 → list_providers() 空 → gate SystemExit fail-closed 拒起 |
+| `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` | `<密码,或配 _PASSWORD_HASH 用 scrypt 哈希>` | 同上;明文内存哈希或预先 `python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"` 算 `_PASSWORD_HASH` |
+| `HERMES_DASHBOARD_BASIC_AUTH_SECRET` | `<固定 ≥32 字节 base64/hex 随机>` | HMAC cookie 签名;**须固定**(默认随机重启失效 session 让用户重登;设固定让 session 跨重启保活) |
 | `R2_ENDPOINT` | `https://<account_id>.r2.cloudflarestorage.com` | litestream WAL→R2 + R2 文件 CRUD |
 | `R2_ACCESS_KEY_ID` | `<R2 key>` | R2 鉴权 |
 | `R2_SECRET_ACCESS_KEY` | `<R2 secret>` | R2 鉴权 |
@@ -137,13 +140,34 @@ curl -s -N https://sonoke-h.hf.space/v1/runs/$RID/events \
 # 次日查 HF Logs 仍运行;Cloudflare R2 nexus-checkpoints 桶 `db/hermes-state.sqlite` WAL 副本存在
 ```
 
-## K-R5 OAuth 闸门(若 DASHBOARD_BIND_HOST=0.0.0.0)
+## K-R5 闸门(2026-08-02 二轮修正,与原生 BasicAuthProvider 对齐)
 
-dashboard 公网绑 7860 须 auth provider(`web_server.py:16954` /login /auth/*):
-- 默认 NousPortal OAuth(需 register app + hf.space HTTPS callback 域)
-- 或自带 password provider(`hermes_cli/dashboard_auth/` 注册自定义)
-- 暂绕 = 先 `DASHBOARD_BIND_HOST=127.0.0.1`(外网不可达 dashboard,仅 api_server /v1/* 经 HF 路由可达 — 但 HF 7860 公网域指 dashboard 非 api_server 8642;此 local-tested-only)
-- 生产须配 OAuth
+dashboard 公网绑 7860(`DASHBOARD_BIND_HOST=0.0.0.0`)非 loopback →
+`should_require_auth=True`(web_server.py:442)→ `auth_required=True`(:17099)→
+gate 开 → `list_providers()` 查 auth provider → 无则 `SystemExit("Refusing to bind
+dashboard to {host} — the auth gate engages on non-loopback binds, but no auth
+providers are registered")` fail-closed 拒起(:17193)。
+
+**终局 = hermes 原生 BasicAuthProvider**(非 OAuth/NousPortal/register app —
+此前误判 OAuth 错向已证伪):
+- 插件 `plugins/dashboard_auth/basic/`(kind: backend,bundled,自动加载无需
+  `plugins.enabled`,plugins.py:1450 `manifest.source=="bundled" and kind=="backend"`)。
+- 触发 = env `HERMES_DASHBOARD_BASIC_AUTH_{USERNAME,PASSWORD,SECRET}`(五 env 全在
+  basic/__init__.py 读:USERNAME:408/PASSWORD:414,451/PASSWORD_HASH:411/SECRET:372/
+  TTL_SECONDS:417;`requires_env` plugin.yaml:6 只声明 USERNAME,其余可选)。
+- 配齐 → basic plugin 注册 → /login 密码表单(scrypt 哈希 + HMAC stateless cookie,
+  无 OAuth/IDP/DB)。缺 USERNAME 或 PASSWORD → list_providers() 空 → gate SystemExit 拒起。
+- **secret 须设固定**(默认随机重启失效 session;设固定 base64/hex ≥32 字节让 session 跨
+  重启保活)。secret 即步骤1 Secrets 表 `HERMES_DASHBOARD_BASIC_AUTH_SECRET` 那行。
+- env 优先于 config.yaml `dashboard.basic_auth.*`(.env.example 段全走 env,HF Secrets 注)。
+
+CORS:base 镜像 patch_web_server.py 仅改一处 `allow_origin_regex→allow_origins=["*"]`
+(web_server.py:345,v0.19.1 + main 845031a 行号一致零漂),解 HF iframe embed
+(sonoke-h.hf.space 在 huggingface.co iframe 内 fetch 跨域);鉴权走 BasicAuthProvider
+cookie 非 CORS credential,无冲突。`--insecure` flag 已 DEPRECATED NO-OP 不用。
+
+dev 免 gate = `DASHBOARD_BIND_HOST=127.0.0.1`(loopback → should_require_auth=False →
+gate 关,免 auth provider,本地测可裸跑;HF 生产公网须 0.0.0.0 + 配齐 basic env)。
 
 ## K-R7 HF DNS 封实测
 

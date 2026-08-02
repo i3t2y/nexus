@@ -1,4 +1,4 @@
-<!-- Space README 简版(2026-08-02 防官方风控扫内容降简)。
+<!-- Space README 简版(2026-08-02 V9 触发 rebuild 拉 nexus-base:stable)。
      详细技术说明存档:docs/hermes/README-detailed-archive.md
      部署清单:docs/new/部署/hermes-v9-hf-deploy-checklist.md -->
 ---

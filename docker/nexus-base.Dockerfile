@@ -126,6 +126,41 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
         https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
     && uv pip install --system --no-cache-dir -e /opt/hermes-agent --no-deps
 
+# ──────────────────────────────────────────────────────────────────────
+# K-R5-2 闸门(2026-08-02 二轮修正,与原生 BasicAuthProvider 对齐):CORS 改源固化
+# ──────────────────────────────────────────────────────────────────────
+# 一轮(2026-08-02):沿用 HermesFace/HuggingMes 旧 `--insecure` 思路,改源三锚点
+# 把 auth gate 全关(should_require_auth→False + auth_middleware bypass)。臆断
+# "HF sandbox 已隔离" = 错。hermes 原生 BasicAuthProvider(plugins/dashboard_auth/basic/,
+# kind: backend,bundled 自动加载)需 gate 开(`should_require_auth` 非 loopback 返 True
+# → `auth_required=True`)才接管 /login 密码表单。关 gate = basic 永不接管 = dashboard
+# 公网裸跑 = 与用户"后台自动加密码"需求向背。且 June 2026 hardening 后公网扫描者能直访,
+# HF sandbox 非纯隔离,密码闸门必要。
+#
+# 二轮(本版,与原生对齐):只留 CORS 改源。auth gate + auth_middleware 回原生,basic provider 接管鉴权。
+#   激活 = config.yaml + env:`HERMES_DASHBOARD_BASIC_AUTH_{USERNAME,PASSWORD,SECRET}`。
+#     - 仅 username + password(password_hash)非空 → basic plugin requires_env 通过 → 注册
+#     - secret 须设固定值(默认随机重启失效 session 隐患,设固定让 session 跨重启)
+#   - 缺 env → list_providers() 空 → gate `SystemExit("Refusing to bind...")` fail-closed 拒起
+#   - 配齐 → gate 通过 → /login 密码表单(scrypt 哈希 + HMAC stateless cookie,无 OAuth/IDP/DB)
+#
+# 仅改一处 CORS(web_server.py 行 345,v0.19.1 + main 845031a grep count=1 双证,行号一致零漂):
+#   allow_origin_regex(限 localhost)→ allow_origins=["*"]。
+#   解 HF iframe embed — sonoke-h.hf.space 在 huggingface.co iframe 内渲染,SPA fetch JS/CSS/WS
+#   跨域回 sonoke-h.hf.space/api/*,默认 CORS regex 拒 → 换 allow_origins=["*"] 放行所有域
+#   (HTTP fetch 层;credentials 默认 False)。 HF 无 X-Frame-Options/CSP frame-ancestors 头注入
+#   (v0.19.1+main grep -in 0 命中双证),iframe embed 仅靠 CORS 够。
+#   鉴权走 BasicAuthProvider cookie(HMAC-sig),非 CORS credential — allow_origins=["*"] 与 cookie
+#   鉴权无冲突(CORS preflight 不挡 SameSite cookie 流)。
+#
+# 注:HERMES_AGENT_TAG 仍 pin v2026.7.30(v0.19.1,470cf66)。main 845031a(8/2)web_server.py 三锚点
+#   行号全一致零漂移(已核),且 main 仅多 1 chore commit,无功能改动。保 tag 不动防 break,升级改 tag+rebuild。
+#
+# 施工:独立脚本 docker/patch_web_server.py(只 1 锚点;避 shell 行续转义 + Python 单行分号地雷;
+#   脚本多行 + 函数,py_compile 可验;锚漂即 build 期 AssertionError 拦建,跨升级稳健)。
+COPY patch_web_server.py /tmp/patch_web_server.py
+RUN cd /opt/hermes-agent && python3 /tmp/patch_web_server.py && rm -f /tmp/patch_web_server.py
+
 # ── 预装 anthropic SDK:消 hermes-agent 运行时 lazy_deps 懒装风控(决定1.6)──
 # 用 [anthropic] extras pin 0.87.0(对齐 pyproject extras,CVE 修正);不裸装最新防漂
 RUN pip install --no-cache-dir "anthropic==0.87.0"
