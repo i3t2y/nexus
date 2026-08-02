@@ -1,0 +1,89 @@
+# 同步 hermes 三件(Dockerfile + README.md + start.sh)到 HF Space repo sonoke/h
+# 永续改造"墓碑层":Dockerfile(墓碑 ARG BASE_IMAGE)+ README.md(HF frontmatter)+ start.sh(boot)三件
+# 触发 HF Space 收到 repo push → 自动 rebuild Dockerfile 拉取 ghcr.io/i3t2y/nexus-base:stable。
+#
+# 触发:手动 workflow_dispatch 或 push 涉 spaces/hermes/{Dockerfile,README.md,start.sh} 变更。
+# 路径 = C(免费 HF 账号无 HF Sources 自动同步):GitHub Actions 用 HF_H_TOKEN git push 三件进 HF Space repo 根。
+#
+# 前提(GitHub repo Settings → Secrets and variables → Actions):
+#   - HF_H_TOKEN = huggingface.co/settings/tokens 生成,权限须含对 Space repo 的 write:
+#       classic token 选 "Write access to contents of all repos"
+#       (或 fine-grained token 指定 sonoke/h 写权限)
+#   - HF_SPACE_REPO = sonoke/h(Owner/仓库名,如改 owner/仓可覆写默认值)
+# nexus 四 Space 分级 token 命名约定(各自 secret 对应各自 Space repo 写权):
+#   HF_H_TOKEN   → sonoke/h       (本 workflow,主控 hermes)
+#   HF_L_TOKEN   → sonoke/l       (langgraph 编排,kv=l)
+#   HF_CC_TOKEN  → sonoke/cc      (claude-code 执行器,kv=cc)
+#   HF_C_TOKEN   → sonoke/c       (codex 执行器,kv=c)
+#   四 token 各自独立 revoked/轮转互不影响;对应 workflow 按本文件复刻改 KV+paths。
+# 前提(HF 侧):Space repo huggingface.co/spaces/sonoke/h 须已手动创建(空白即可)。
+#   首次 push 后 HF 自动识别 README.md frontmatter sdk:docker 触发 Dockerfile rebuild。
+#
+# 三件源头在 nexus 源仓 spaces/hermes/ 子目录;HF Space repo 期望根目录对齐(改名 cp)。
+name: Sync hermes 三件 → HF Space (sonoke/h)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "spaces/hermes/Dockerfile"
+      - "spaces/hermes/README.md"
+      - "spaces/hermes/start.sh"
+      - ".github/workflows/sync-hf-space.yml"
+
+env:
+  HF_SPACE_REPO: ${{ secrets.HF_SPACE_REPO || 'sonoke/h' }}
+
+jobs:
+  sync-hf:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout nexus 源仓
+        uses: actions/checkout@v4
+
+      - name: 配置 git HF push 身份
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Clone HF Space repo(带 HF_H_TOKEN 认证)
+        env:
+          HF_H_TOKEN: ${{ secrets.HF_H_TOKEN }}
+        run: |
+          set -e
+          git clone "https://user:${HF_H_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}" hf-space
+          cd hf-space
+          # HF Space repo 默认分支 main;fetch 全 branch 防漂移(部分 repo 可能用 refs/pr/*)
+          git fetch --all
+          # 切到 main(若不存在则声波本地)
+          git checkout main || git checkout -B main
+
+      - name: 拷贝三件 → HF repo 根(覆盖)
+        run: |
+          set -e
+          src="spaces/hermes"
+          dst="hf-space"
+          for f in Dockerfile README.md start.sh; do
+            cp "${src}/${f}" "${dst}/${f}"
+            echo "[sync] ${src}/${f} → ${dst}/${f}"
+          done
+          # 列三件 checksum 验证内容一致
+          cd "${dst}"
+          sha256sum Dockerfile README.md start.sh
+
+      - name: Commit + push 三件(若有变更)
+        env:
+          HF_H_TOKEN: ${{ secrets.HF_H_TOKEN }}
+        run: |
+          set -e
+          cd hf-space
+          git add Dockerfile README.md start.sh
+          if git diff --cached --quiet; then
+            echo "[sync] 三件无变更,跳过 push(HF 不触发新 rebuild)。"
+          else
+            git commit -m "sync nexus-base:stable 三件(触发 rebuild)"
+            # push 用带 token 的 URL(防本地 remote 凭据缓存失效)
+            git push "https://user:${HF_H_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}" main
+            echo "::notice::已 push 三件进 HF Space ${HF_SPACE_REPO},HF 自动触发 Dockerfile rebuild。"
+          fi
