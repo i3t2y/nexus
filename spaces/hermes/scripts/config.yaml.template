@@ -1,0 +1,43 @@
+# Nexus Hermes Agent config 模板(K 形态,2026-08-02)
+# start.sh boot 首启从本模板生成 $HERMES_HOME/config.yaml(不覆盖既有)。
+# 全原生三组件:gateway(含 api_server adapter 同 loop)+ dashboard(in-proc daemon thread --port 7860)
+#               + 两 plugin tab(nexus-r2 R2 文件 / nexus-ops 下游+业务表)。
+#
+# 关键闸门(K2/K-R3):
+#   - API_SERVER_KEY env(≥16 字符)是 api_server adapter 真触发器(非本 yaml,见 .env.example)。
+#   - platform_toolsets top-level 三行:toolset="nexus"(nexus-r2 注册的三下游 bridge tool)
+#     须在此显式列各平台,plugin tool 注册(code import)≠ toolset 启用平台注入。
+#   - plugins.enabled 列两 plugin license(代码 import 许可);dashboard tab 发现靠 manifest.json 不靠此项。
+#   - disabled_toolsets 全局砍无头跑不起的 browser/image_gen/voice/tts。
+#   - database.journal_mode: wal(K-R6:配合 base libsqlite3 ≥3.51.3 防 fresh DB 强 DELETE 致 litestream 静默 off)。
+
+plugins:
+  enabled:
+    - nexus-r2
+    - nexus-ops
+
+# top-level(非 nested):各平台启用的 toolset 列表。
+# hermes-* 是平台自带 toolset; nexus 是 nexus-r2 注册的下游 bridge toolset。
+platform_toolsets:
+  api_server: [hermes-api-server, nexus]
+  telegram:   [hermes-telegram, nexus]
+  discord:    [hermes-discord, nexus]
+
+# 全局禁用 toolset(HF 无头无 sandbox,chromium 起不来 + 触浏览器自动化风控)。
+disabled_toolsets:
+  - browser
+  - image_generation
+  - voice
+  - tts
+
+database:
+  journal_mode: wal   # K-R6 litestream 需 WAL 跟踪
+
+# telegram/discord config(平台 adapter 由此起,凭证走 env 非 yaml):
+#   TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN env 注。
+#   HF DNS 封 IM 域(K-R7):telegram 靠 hermes 原生 telegram_network.py DoH+fallback IP 自解;
+#   discord 硬编无 base_url 开关,仅 DISCORD_PROXY env 兜底。
+telegram:
+  enabled: true
+discord:
+  enabled: true

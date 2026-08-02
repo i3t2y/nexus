@@ -65,6 +65,19 @@ ptyprocess>=0.7.0,<1   # linux marker(posix)
 # 我们 disabled_toolsets 含 vision/image_generation,hermes Pillow 路径不触发,
 # 放弃 hermes 的 12.2.0 pin,交由 gradio 解析兼容 pillow<12(hermes 缩图代码同 API 仍可跑)
 # Pillow==12.2.0   # 略此 pin,随 gradio 解析
+# === messaging extras 子集(api_server adapter + telegram/discord IM polling)===
+# hermes 把 aiohttp 放 [messaging] extra 而非 core deps,但 api_server adapter
+# 要 aiohttp web server(gateway/platforms/api_server.py:78 `from aiohttp import web`),
+# aiohttp 缺则 api_server adapter 起不成(kernel crash 警告:API Server: aiohttp not installed)。
+# 装 messaging 全 extra 含 slack/matrix/voice 重件(nemo-relay/mautrix/PyNaCl/opuslib)省;
+# 只手钉 nexus 真用子集 = aiohttp + telegram-bot 裸(去 [webhooks] 因用 polling)+
+# discord.py 裸(去 [voice] 因 HF 无麦克风文字 IM)+ brotlicffi(telegram 文件 brotli 解压)。
+# HF 期 IM 通路靠 telegram polling + discord REST/WS;voice/slack/matrix 不用。
+aiohttp==3.14.1            # api_server adapter HTTP server;CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+python-telegram-bot==22.6  # polling 路径用;不带 [webhooks] extra(HF 用 polling 不用 webhook)
+discord.py==2.7.1          # 不带 [voice] extra(HF 无麦克风,文字 IM 不需 PyNaCl/opuslib/ffmpeg)
+brotlicffi==1.2.0.1        # telegram sendPhoto/voice brotli 压缩解;文字 IM 可缺但文件传输需
+
 # nemo-relay:NVIDIA Rust agent runtime binding(linux x86_64/aarch64),非 omniroute 路由。
 # hermes core dep;base 装 --no-deps 须手钉。platform marker 保 linux x86_64(HF amd64)
 nemo-relay>=0.6.0,<0.7; sys_platform == 'linux' and platform_machine == 'x86_64'

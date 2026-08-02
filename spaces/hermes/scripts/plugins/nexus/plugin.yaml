@@ -1,9 +1,0 @@
-name: nexus
-version: 0.1.0
-description: "Bridge tools to live Nexus downstream Spaces — call_claude / call_codex / route_langgraph. Hermes Agent (NousResearch) 内核换装后,agent 智能决策调这三 tool 桥到现役 call_space 调下游 claude-code/codex/langgraph Space。"
-author: i3t2y
-kind: standalone
-provides_tools:
-  - nexus_call_claude
-  - nexus_call_codex
-  - nexus_route_langgraph

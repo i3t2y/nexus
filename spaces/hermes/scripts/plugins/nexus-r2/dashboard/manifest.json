@@ -1,0 +1,1 @@
+{"name": "nexus-r2", "label": "R2 Files", "description": "Nexus R2 artifact bucket CRUD — list / upload / read / save / delete cloud files.", "icon": "HardDrive", "version": "0.1.0", "tab": {"path": "/nexus-r2", "position": "after:files"}, "entry": "dist/index.js", "css": "dist/style.css", "api": "plugin_api.py"}

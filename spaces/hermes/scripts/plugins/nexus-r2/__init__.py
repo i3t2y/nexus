@@ -1,29 +1,30 @@
-"""Nexus 下游桥接插件 —— 把现役 call_space 注册为 Hermes Agent 的 custom tool。
+"""Nexus R2 plugin —— 三 downstream bridge tool + R2 dashboard tab。
 
-永续改造:spaces/hermes/ 内核换装 NousResearch Hermes Agent 后,agent 智能决策
+K 阶段(实证推翻 B 段自建):Hermes Agent(NousResearch)内核换装后,agent 智能决策
 调下游 Space 不再靠自建关键词 route(),而是 agent loop 自行判断 prompt 语义选调
 nexus_call_claude(实现/重构/调试)/ nexus_call_codex(补全/片段)/
 nexus_route_langgraph(规划/多步/工作流)三 tool。
 
 三 tool 桥到现役 libs/shared/gateway.call_space(PYTHONPATH=/data/libs 同进程 import):
-  - claude  → POST /run
-  - codex   → POST /complete
+  - claude    → POST /run
+  - codex     → POST /complete
   - langgraph → POST /execute
 handler 返 tool_result()/tool_error() JSON 字符串(hermes agent tool result 约定),
 agent 自动回写 messages/记忆(用户 Match1 意:结果回写 Hermes 记忆),无需手动注入。
 
-这是 kind: standalone 插件:不在 bundled 自加载白名单,须 HERMES_HOME/config.yaml
-plugins.enabled: [nexus] opt-in 才加载(hermes_cli/plugins.py:1469-1488)。
-agents 启动序列:先插件 register(塞 tools.registry) → 再 AIAgent(enabled_toolsets=["nexus"])
-构造时 get_tool_definitions 才把 nexus toolset 喂给 agent loop。
+本 plugin 同时注 dashboard/(manifest+plugin_api+dist) 一 R2 文件 CRUD tab,
+经 web_server._discover_dashboard_plugins 自动 mount /api/plugins/nexus-r2/。
+
+kind: backend 自动加载,免 plugins.enabled opt-in(同 spotify);但 toolset="nexus"
+须经 config.yaml `platform_toolsets.<api_server/telegram/discord>` 显式列才透传
+到各平台 agent(K-R3 闸门:plugin 注册 code import ≠ toolset 启用平台注入)。
 """
 from __future__ import annotations
 
 # 注:hermes 插件加载器(_load_directory_module)把 user 插件 import 为
-# hermes_plugins.<slug>(~/.hermes/plugins/nexus → hermes_plugins.nexus),
-# 仅把 nexus/ 自身列入 submodule_search_locations,父 plugins/ 不在 sys.path。
-# 故用相对 import(同包内),非 spotify 式 `from plugins.spotify...`(那样只对
-# bundled 插件成立,因 repo/plugins 父目录在 hermes 运行 sys.path)。
+# hermes_plugins.<slug>(~/.hermes/plugins/nexus-r2 → hermes_plugins.nexus_r2,
+# 把目录名 `-` 替 `_` 成合法 python 标识符),仅把 nexus-r2/ 自身列入
+# submodule_search_locations,父 plugins/ 不在 sys.path。故用相对 import(同包内)。
 from .tools import (
     NEXUS_CALL_CLAUDE_SCHEMA,
     NEXUS_CALL_CODEX_SCHEMA,

@@ -110,7 +110,7 @@ async def _invoke_downstream(space: str, args: dict[str, Any], **kw: Any) -> str
     await call_space(每次 httpx.AsyncClient context manager,无 loop-sticky client,安全)。
 
     thread_id 透传:优先 args["thread_id"],次 Hermes kw["task_id"](=上游 agent 的
-      run_conversation task_id, agent_server 已传 task_id=上游 thread_id),
+      run_conversation task_id,hermes 已传 task_id=上游 session/run 线程 id),
       缺省占位 "__nexus_tool_autogen__"。
     request_id 透传:沿同 thread_id 作 rid 串全链路排障(路A 显式传 rid 对照,路B 此处补齐);
       下游 new_request_id 收非空即复用不重生,跨 Space 串联不断。
@@ -120,7 +120,7 @@ async def _invoke_downstream(space: str, args: dict[str, Any], **kw: Any) -> str
         return tool_error("prompt 是必填参数")
 
     thread_id = args.get("thread_id") or kw.get("task_id") or "__nexus_tool_autogen__"
-    # request_id 透传:agent_server 调 run_conversation(task_id=thread_id) 时 kw 带 task_id;
+    # request_id 透传:hermes 调 run_conversation(task_id=thread_id) 时 kw 带 task_id;
     # 作 rid 透传下游,跨 HR→claude 多跳串联排障。
     request_id = kw.get("request_id") or thread_id
     payload = {"thread_id": thread_id, "prompt": prompt}

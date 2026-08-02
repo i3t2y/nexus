@@ -11,12 +11,88 @@
 #   docker tag  ghcr.io/i3t2y/nexus-base:stable ghcr.io/i3t2y/nexus-base:vN
 #   docker push ghcr.io/i3t2y/nexus-base:vN
 
+# ──────────────────────────────────────────────────────────────────────
+# K-R6 闸门 stage:自源码编 SQLite 3.53.4(≥3.51.3)防 WikiLeaks-free → fresh DB 强 DELETE 致 litestream 静默 off
+# ──────────────────────────────────────────────────────────────────────
+# hermes_state.py:509 is_sqlite_wal_reset_vulnerable 把 SQLite 3.7.0–3.51.2 判 vulnerable,
+# fresh state.db 强制 DELETE journal fallback 无视 config journal_mode:wal(:639),litestream 需 WAL 跟踪
+# → fresh DB DELETE = litestream 静默死,V7 测假阳(restore 成功 ≠ WAL 增量真流)。
+# Debian 13(trixie)ships 3.46.1 含 WAL-reset bug;python:3.11-slim(bookworm)更旧。
+# 抄上游 Dockerfile:5-41 sqlite_build stage 自编 libsqlite3.so.3.53.4 + 全套 FTS3/4/5/RTREE/MATH 编译 flag,
+# 运行期 COPY 进 /usr/local/lib + 软链 libsqlite3.so.0 + ld.so.conf.d + ldconfig 优先,python3 import sqlite3 即链此。
+# 进度 3.53.4 = 上游 #70480 修复版(≥3.51.3 闸门 ✓)。
+FROM debian:13.4 AS sqlite_build
+ARG SQLITE_AUTOCONF_VERSION=3530400
+ARG SQLITE_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        build-essential ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60 \
+        -o /tmp/sqlite.tar.gz \
+        "https://sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" || \
+     curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 \
+        -o /tmp/sqlite.tar.gz \
+        "https://sources.buildroot.net/sqlite/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz") && \
+    printf '%s  %s\n' "${SQLITE_SHA256}" /tmp/sqlite.tar.gz > /tmp/sqlite.sha256 && \
+    sha256sum -c /tmp/sqlite.sha256 && \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp && \
+    cd "/tmp/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}" && \
+    CFLAGS="-O2 \
+        -DSQLITE_ENABLE_FTS3 \
+        -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+        -DSQLITE_ENABLE_FTS4 \
+        -DSQLITE_ENABLE_FTS5 \
+        -DSQLITE_ENABLE_RTREE \
+        -DSQLITE_ENABLE_GEOPOLY \
+        -DSQLITE_ENABLE_COLUMN_METADATA \
+        -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+        -DSQLITE_ENABLE_DBSTAT_VTAB \
+        -DSQLITE_ENABLE_DBPAGE_VTAB \
+        -DSQLITE_ENABLE_MATH_FUNCTIONS \
+        -DSQLITE_ENABLE_PREUPDATE_HOOK \
+        -DSQLITE_ENABLE_SESSION \
+        -DSQLITE_SECURE_DELETE \
+        -DSQLITE_THREADSAFE=1 \
+        -DSQLITE_MAX_VARIABLE_NUMBER=250000" \
+        ./configure --prefix=/opt/sqlite-fixed --disable-static && \
+    make -j"$(nproc)" && \
+    make install
+
+# ──────────────────────────────────────────────────────────────────────
+# K-R4 闸门 stage:抽 node:22 LTS(bookworm-slim,glibc 2.36 兼 trixie 运行期)供 web build
+# ──────────────────────────────────────────────────────────────────────
+# hermes_cli/web_dist/ .gitignore(仓库无预建),cmd_dashboard 无 --skip-build 启动期 build 会 timeout(HF 无 npm/network)。
+# base bake 期 cd web && npm run build 预建 hermes_cli/web_dist/(vite 输出,见 vite.config.ts outDir),
+# 镜像层固化,start.sh 跑时设 HERMES_WEB_DIST 指向 → web_server.py:135 直读预建 dist。
+# node 仅 build 期需(运行期 SPA 是静态 JS,无需 node)。COPY node/npm/corepack 三件入 builder stage。
+FROM node:22-bookworm-slim AS node_source
+
+# ──────────────────────────────────────────────────────────────────────
+# 运行期主 stage:python:3.11-slim + 自编 libsqlite3 + base 依赖 + hermes-agent 内核 + web_dist 预建
+# ──────────────────────────────────────────────────────────────────────
 FROM python:3.11-slim
+
+# ── 优先自编 SQLite 3.53.4(K-R6,在上游 python:3.11-slim 系统 libsqlite 之上覆盖)──
+COPY --from=sqlite_build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/
+RUN ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 && \
+    ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so && \
+    printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf && \
+    ldconfig && \
+    python3 -c "import sqlite3, sys; \
+v = sqlite3.sqlite_version_info; \
+sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; \
+db = sqlite3.connect(':memory:'); \
+db.execute(\"CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')\"); \
+db.execute(\"INSERT INTO docs VALUES ('hermes')\"); \
+sys.exit('SQLite FTS5 trigram self-test failed') if db.execute(\"SELECT count(*) FROM docs WHERE docs MATCH 'erm'\").fetchone()[0] != 1 else None; \
+db.close()"
 
 # ── apt 段(必 root,在 USER user 前)─────────────────────────────────
 # ca-certificates/curl: litestream 下载 + omniroute 实测;
 # sqlite3: state.db 调试;git: clone hermes-agent;base: nemo-relay 等可能源码编译兜底;
 # jq: 日志/JSON 解析;ripgrep: hermes-agent 搜索(无则降级 grep,可选保留)
+# 注:node/npm 不入运行期(Web build 在 builder stage 跑完,产物 COPY 进运行期,运行期不需 node)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl jq sqlite3 git ripgrep build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -54,6 +130,27 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
 # 用 [anthropic] extras pin 0.87.0(对齐 pyproject extras,CVE 修正);不裸装最新防漂
 RUN pip install --no-cache-dir "anthropic==0.87.0"
 
+# ── K-R4 闸门:base bake 期 prebuild hermes_cli/web_dist/ (dashboard SPA)──
+# 用 builder stage 抽来的 node/npm/corepack 跑 `npm install --workspace web && npm run build -w web`。
+# 抄上游 Dockerfile:176-179,196,272(减法:只 web build,不装 playwright/photon/matrix,不跑 ui-tui build)。
+# web/package.json deps 含 @hermes/shared(file:../apps/shared)→ 须 COPY web/package.json + apps/shared/。
+# build 产物 hermes_cli/web_dist/(vite outDir,见 vite.config.ts)固化入镜像层,运行期 start.sh --skip-build 直读。
+# 注:此段在 clone 后(repo web/ 已在 /opt/hermes-agent/web),build 跑在 /opt/hermes-agent 内,
+#      产物落 /opt/hermes-agent/hermes_cli/web_dist/(已 git clone 进来),不动运行期 user 改动。
+COPY --from=node_source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+# 跑 web build:在 /opt/hermes-agent 内 npm install --workspace web + npm run build -w web
+RUN cd /opt/hermes-agent && \
+    npm install --workspace web --no-audit --fetch-retries=5 && \
+    npm run build -w web && \
+    npm cache clean --force && \
+    test -f /opt/hermes-agent/hermes_cli/web_dist/index.html && \
+    echo "[base] web_dist prebuild OK -> /opt/hermes-agent/hermes_cli/web_dist/"
+
 # ── 切非 root ────────────────────────────────────────────────────────
 USER user
 ENV HOME=/home/user \
@@ -62,7 +159,9 @@ ENV HOME=/home/user \
     # hermes-agent state.db 唯一重定向开关(逻辑层 start.sh 可覆盖,固化默认)
     HERMES_HOME=/data/.hermes \
     # 内核源码路径(逻辑层 import run_agent 用,只读,无需 user 写)
-    HERMES_AGENT_DIR=/opt/hermes-agent
+    HERMES_AGENT_DIR=/opt/hermes-agent \
+    # K-R4:指向 bake 期 prebuild 的 dashboard SPA dist(web_server.py:135 读此 env)
+    HERMES_WEB_DIST=/opt/hermes-agent/hermes_cli/web_dist
 
 WORKDIR $HOME/app
 
