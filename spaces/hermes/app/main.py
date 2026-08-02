@@ -59,7 +59,10 @@ def _spawn_gateway() -> "subprocess.Popen[bytes]":
     stdout/stderr pipe 主线程读 + 转印 boot stderr(HF Logs 可见)。
     """
     hermes_bin = _hermes_bin()
-    cmd = [hermes_bin, "gateway", "run", "--accept-hooks"]
+    # --replace:幂等覆盖残留 gateway 实例(HF Space reboot/start.sh while 重启场景下
+    # 旧 gateway pid 可能残留(telegram polling 抗 SIGTERM 不及时退)→ pid 锁撞死循环。
+    # --replace 让新 gateway 自动 stop+replace 旧实例(systemd-managed 场景同理)。
+    cmd = [hermes_bin, "gateway", "run", "--replace", "--accept-hooks"]
     print(f"[hermes-boot] spawn gateway: {' '.join(cmd)}", file=sys.stderr, flush=True)
     return subprocess.Popen(
         cmd,
