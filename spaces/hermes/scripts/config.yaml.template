@@ -4,12 +4,16 @@
 #               + 两 plugin tab(nexus-r2 R2 文件 / nexus-ops 下游+业务表)。
 #
 # 关键闸门:
-#   - model 段(zai provider):glm-5.2 走 hermes 原生 `zai` provider(非 anthropic — anthropic
-#     provider base_url override 受白名单限制,hf.space 域过不去 + 协议错配 x-api-key vs Bearer)。
-#     zai 是 OpenAI /v1/chat/completions 兼容(Bearer 鉴权),直指 omniroute https://nonoke-omn.hf.space/v1。
-#     报错 `No usable credentials found for provider 'zai'. Set OPENAI_API_KEY,...` = 模型名含 glm
-#     静态路由(models.py:1278 glm→zai)→ 缺 OPENAI_API_KEY env。须 HF Secret 注 OPENAI_API_KEY(omniroute Bearer key)。
-#     base_url 必带 /v1(否则 OpenAI client 拼错路径 404)。env 等价:GLM_BASE_URL 同值(无条件覆盖无白名单)。
+#   - model 段(provider=custom,官方正路,2026-08-02 源码核改):
+#     omniroute = 第三方 OpenAI 兼容端点 → hermes 原生 `custom` provider
+#     (cli-config.yaml.example L99 逐字 "Any other OpenAI-compatible endpoint.
+#     Set base_url below",别名 ollama/vllm/llamacpp 全映射 custom)。
+#     非原生 `openai` provider — openai 不信誉 base_url 覆盖走官方 api.openai.com → omniroute key 401。
+#     custom 信誉 model.base_url 指 omniroute https://nonoke-omn.hf.space/v1(必带 /v1),
+#     key = OPENAI_API_KEY env(omniroute Bearer key;auth.py:481 custom 进特殊集)。
+#     报错 `No usable credentials found for provider 'zai'. Set GLM_API_KEY,...` = 模型名含 glm/z-ai
+#     前缀 → alias 静态路由(auth.py:1909 glm→zai)→ zai provider 缺 GLM_API_KEY env。
+#     解 = 模型名避开 glm 前缀(用 claude-sonnet-5)+ provider 显式 custom 绕 alias。
 #   - dashboard.basic_auth 段(env 优先):HF 7860 公网绑须 BasicAuthProvider 接管鉴权(原生,
 #     kind: backend 自动加载)。env HERMES_DASHBOARD_BASIC_AUTH_{USERNAME,PASSWORD,SECRET} 缺则
 #     list_providers() 空 → gate SystemExit fail-closed 拒起。配齐 → /login 密码表单。
@@ -25,14 +29,20 @@ plugins:
     - nexus-r2
     - nexus-ops
 
-# ── model 段:openai provider + OPENAI_BASE_URL 指 omniroute ──
-# 用 openai provider(兼容 OpenAI /v1/chat/completions 协议,Bearer 鉴权)。
-# base_url 经 OPENAI_BASE_URL env 注(非本 yaml 配— env 优先覆盖)。
-# key = OPENAI_API_KEY env(omniroute Bearer key)。
-# 模型名避开 glm 前缀防静态路由触发 zai provider。
+# ── model 段:custom provider + base_url 指 omniroute(官方正路)──
+# 参考 refs/hermes-agent/cli-config.yaml.example L99 逐字:
+#   "custom" = "Any other OpenAI-compatible endpoint. Set base_url below."
+#   别名 ollama/vllm/llamacpp 全映射 custom。
+# omniroute(nonoke/omn HF Space)= 第三方 OpenAI 兼容端点 → 属 custom 非原生 openai。
+# 用 custom(Bearer 鉴权 OpenAI /v1/chat/completions 兼容),读 OPENAI_API_KEY env(auth.py:481
+#   custom 进特殊集)。
+# ★ base_url 进 config.yaml model 段显式(非仅 env);openai 原生 provider 不信誉 base_url
+#   覆盖会走官方 api.openai.com → omniroute key 401。custom 信誉 base_url。
+# 模型名避开 glm/z-ai 前缀防 alias 触发 zai provider(auth.py:1909 glm→zai)。
 model:
   default: claude-sonnet-5
-  provider: openai
+  provider: custom
+  base_url: https://nonoke-omn.hf.space/v1
 
 # top-level(非 nested):各平台启用的 toolset 列表。
 # hermes-* 是平台自带 toolset; nexus 是 nexus-r2 注册的下游 bridge toolset。
