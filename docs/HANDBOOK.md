@@ -14,6 +14,7 @@
                                               (langgraph/claude/codex)
  Dashboard(UI)  +  FastAPI(同进程7860)            回传结果写库
 ```
+> ⚠️ 上图系**模板阶段自建框壳**拓扑。**换装后(2026-08-02)**hermes 改全原生 NousResearch Hermes Agent 三组件:HTTP 入口 `/v1/runs`(api_server adapter,非自建 `/run`)+ dashboard SPA(原生 React19,非自建 Gradio)。图示主旨(hermes 唯一入口 → 下游 → R2/Supabase)不变,细节取 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md) §4 为准。
 
 设计四原则：① 计算与存储分离（Space 重启不丢数据）② 唯一入口路由（下游 Space 不直接对外）③ 凭证外置（全走 Secrets/环境变量，不入库不入码）④ 模板先行（当前**模板阶段**，凭证未填，代码可直接部署，填 Secrets 即跑）。
 
@@ -33,7 +34,7 @@
 | **单进程监听 7860** | HF Space 要求单进程监听 7860 | hermes 用 `gr.mount_gradio_app(fastapi_app, demo, "/")` 把 Gradio Dashboard 挂到 FastAPI 同端口；FastAPI 路由 API + Gradio UI 一个进程 |
 | **HF 私有 Space 可见性** | 私有 Space embed URL 仅 owner/collaborators 可访，外部 404 | 需 `HF_TOKEN` 或经 Worker 转发；调用带 `Authorization: Bearer <HF_TOKEN>` |
 
-> **Hermes Agent 认知修正**：NousResearch 开源 hermes-agent 是 TUI/CLI 交互式 agent（`uv` 装本地），`hermes gateway start` 是 Telegram/Discord 等消息平台网关，**不监听 HTTP 端口、无 `--port`**。故本方案**不依赖原生 hermes CLI 当 Space HTTP 主控**，自建 Gradio+FastAPI 实现。部分参考文档提到 `hermes gateway start --port 7860`、`/learn`、`hermes skills install <name>` 等命令，官方 README（2026-07 查证）**均无**，前端方案不照搬。
+> **Hermes Agent 认知修正**(⚠️ 2026-08-02 已推翻旧结论,见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)):NousResearch 开源 hermes-agent 是 TUI/CLI 交互式 agent(`uv` 装本地),`hermes gateway start` 是 Telegram/Discord 等消息平台网关。**旧结论(2026-07)**称"不监听 HTTP 端口、无 `--port`,故自建 Gradio+FastAPI 实现" — **实证已推翻**:hermes-agent 源码核证自带原生三组件(gateway 含 api_server adapter `/v1/runs` + dashboard SPA `web_server.start_server --port 7860` + plugin 双注),Nexus hermes Space **改用全原生三组件,废弃自建 Gradio+FastAPI 框壳**。当前 hermes 现役真态见换装实况件,本手册 §3.1/§6 表内 "自建 main.py /run /enqueue 端点 / Gradio Tab R2 文件管理" 等描述均属旧自建框壳阶段遗留,**取实况件为准**。
 
 ---
 
@@ -91,7 +92,7 @@ nexus/
 
 | Space | URL repo 名 | SDK | 端口 | 角色 |
 |-------|-----------|-----|------|------|
-| hermes | `hermes` | docker | 7860 | 主控大脑：Dashboard + FastAPI 路由 + 双写/保活/自愈后台。**永续改造**:逻辑层进 HF Storage Bucket /data,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑 |
+| hermes | `hermes` | docker | 7860 | 主控大脑。**⚠️ 换装后实态** = 全原生 NousResearch Hermes Agent 三组件(gateway api_server `/v1/runs` + dashboard SPA + 两 plugin tab),非自建 Gradio+FastAPI(旧)。详见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)。**永续改造**不变:逻辑层进 HF Storage Bucket /data,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑 |
 | langgraph | `langgraph` | docker | 7860 | 复杂工作流编排，AsyncPostgresSaver Checkpoint + R2 blob |
 | claude-code | `claude-code` | docker | 7860 | 强推理，对接 Anthropic Messages API |
 | codex | `codex` | docker | 7860 | 快速编码，对接 OpenAI 兼容 /chat/completions |
@@ -129,6 +130,8 @@ Cloudflare Worker，单文件 `src/index.ts`：
 所有调用：JSON POST。下游 Space 鉴权 header 用 **`X-Nexus-Key: Bearer <NEXUS_API_KEY>`**（`Authorization` 留给私有 Space 的 HF 层 `Bearer HF_TOKEN`，避免同名冲突导致 HF 层 401）+ `Content-Type: application/json`。经 Worker 网关时 Worker 内部会把 `X-Nexus-Key` 注入下游请求。
 
 ### 3.1 hermes（对用户/Worker 的接口）
+
+> ⚠️ 下表系**模板阶段自建框壳**端点(自建 `app/main.py` route() + Gradio Dashboard)。**换装后(2026-08-02)**端点改全原生 hermes api_server:`GET /v1/health` + `POST /v1/runs`(body `{"input":...}` 非 `{"prompt":...}`)+ `GET /v1/runs/{id}` + `GET /v1/runs/{id}/events`(SSE,取 `assistant.completed.content`)+ `POST /v1/chat/completions`;UI 改原生 dashboard SPA。**取 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md) §4 为准**,下表保留作模板阶段历史参照(下游路由语义 route() 关键词规则仍可沿用)。
 
 | 方法 | 路径 | body | return | 说明 |
 |------|------|------|--------|------|
@@ -452,6 +455,8 @@ langgraph `node_*` 是桩返回。真实接入在 `node_understand`/`node_plan`/
 ## 12. 当前状态与下一步
 
 **当前**：模板阶段。全部代码直接可部署，31 个 Python 文件全编译通过，Worker `tsc --noEmit` 通过，`sync-spaces.sh` 校验 4 个 Space libs 与根一致无 pycache 残留。凭证未真填，不含任何密钥。
+
+> **Hermes 换装后实态(2026-08-02 起,覆盖本手册旧"模板阶段自建主控"描述)**:hermes Space 内核已换装全原生 NousResearch Hermes Agent 三组件(gateway api_server + dashboard SPA + 两 plugin tab),废弃自建 Gradio+FastAPI;模型经外部 OmniRoute(`nonoke/omn`)的 **omn custom provider** 出(非旧 zai/anthropic 路径)。K-R1/R5/R6/R7/R8 + omn provider 四闸门代码侧全落,待用户 HF Space Restart + Secrets `OPENAI_API_KEY` 配齐 + K-R8 base 镜像重 build 推 GHCR。**换装实况权威件 → [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)** — 任何 AI 接手 hermes 先读此件,本手册 §3.1 端点表 / §6 增强机制表内自建描述属旧框壳遗留,取实况件为准。
 
 **演进路径**：
 ```

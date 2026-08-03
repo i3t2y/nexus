@@ -14,7 +14,7 @@
 
 | Space | 角色 | SDK | 状态 |
 |-------|------|-----|------|
-| `hermes` | 主控大脑：Gradio Dashboard + FastAPI 路由（监听7860）+ 双写/保活/自愈后台。**永续改造**:逻辑层进 HF Storage Bucket /data 挂载,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑永不动 | Docker | 模板 |
+| `hermes` | 主控大脑(⚠️ 换装后实态 = 全原生 NousResearch Hermes Agent 三组件:gateway api_server `/v1/runs` + dashboard SPA + 两 plugin tab,非自建 Gradio+FastAPI。详见 [hermes-换装实况.md](./hermes/hermes-换装实况.md))。**永续改造**:逻辑层进 HF Storage Bucket /data 挂载,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑永不动 | Docker | 换装后 |
 | `langgraph` | 复杂工作流编排，含 Checkpointer | Docker | 模板 |
 | `claude-code` | 复杂推理、代码生成 | Docker | 模板 |
 | `codex` | 快速编码、补全 | Docker | 模板 |
@@ -148,9 +148,13 @@ HF 免费个人号旧 Docker hermes Space 因 2026-07 平台变更锁死:git pus
 
 ### Hermes Agent ≠ HTTP 服务（查证修正）
 
+> ⚠️ **2026-08-02 已推翻**(本文旧结论)。源码核证 `refs/hermes-agent` 后,hermes-agent 自带原生三组件:gateway 含 api_server adapter(`/v1/runs` HTTP 入口,env `API_SERVER_KEY` 触发)+ dashboard SPA(`web_server.start_server --port 7860`)。Nexus hermes Space **改全原生三组件,废弃自建 Gradio+FastAPI 框壳**。旧结论"不监听 HTTP、无 `--port`、须自建"系 2026-07 早期查证不全所致。**现役真态见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)**,以下旧文保留作历史辨伪参照(勿再据此自建):
+>
+> ---
+
 Nous Research 开源 Hermes Agent（`github.com/NousResearch/hermes-agent`，`curl install.sh | bash` 安装）是 **TUI/CLI 交互式 agent**，基于 `uv` 装在 `~/.hermes/`。`hermes gateway start` 指**消息平台网关**（Telegram/Discord 等），**不监听 HTTP 端口**，**无 `--port` 参数**。
 
-故本方案 **不依赖原生 hermes CLI 作 Space 的 HTTP 主控**——HF Space 要求单进程监听 7860。Hermes Space 用自建 **Gradio Dashboard + FastAPI 路由** 同进程实现（监听 7860）。原生 hermes CLI 可选作**本地增强层**（自学习 Skills 等），非架构硬依赖。
+故本方案 **不依赖原生 hermes CLI 作 Space 的 HTTP 主控**——HF Space 要求单进程监听 7860。Hermes Space 用自建 **Gradio Dashboard + FastAPI 路由** 同进程实现（监听 7860）。原生 hermes CLI 可选作**本地增强层**（自学习 Skills 等），非架构硬依赖。〔↑ 旧结论保留作辨伪,已推翻,见上〕
 
 > 注：部分参考文档提到 `hermes gateway start --port 7860`、`/learn`、`/goal`、`hermes skills install <name>`，官方 README（2026-07 查证）**均无**。前端方案不照搬，避免采坑。
 
@@ -168,6 +172,8 @@ API 已对照官方文档（2026-07）：
 - `supabase.create_client(url, key, options=None)`，`upsert(json, on_conflict=, ignore_duplicates=)`
 
 ## 增强机制（Hermes Space）
+
+> ⚠️ 本节描述系 hermes 换装前**自建框壳阶段**遗留(`start.sh` 自建 while 循环 `uvicorn app.main:app`、自建 Gradio Tab R2 文件管理、自建 `app/main.py` 路由)。**2026-08-02 换装后**:hermes 改全原生 NousResearch Hermes Agent 三组件,gateway/api_server/dashboard SPA/plugin 取代自建框壳,R2 文件管理改由 `nexus-r2` plugin 提 native tab。表中 `persist_to_r2.py`/`restore_from_r2.py`/`keepalive.py`/`replay_packages.py` 四脚本**仍保留**(litestream 互补灾备 + 保活 + 包重放,换装未动);自建 `app/main.py` 路由 / Gradio Tab / `uvicorn` 共生手法**已废**。**现役真态见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)**,本节取"四脚本保留"部为准,自建框壳部勿照。
 
 借自 HermesFace / HuggingMes 两项目的最高价值点，已改成 R2+Supabase 版集成进 Hermes Space：
 
@@ -188,15 +194,17 @@ Hermes Space 目录(永续改造后,镜像仅留引导=墓碑):
 spaces/hermes/            # ← git 真源(逻辑层镜像;CI 守此)
 ├── README.md             # 引导文件(HF 要求 frontmatter)
 ├── Dockerfile            # 墓碑:ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable + FROM ${BASE_IMAGE} + COPY start.sh + ENV PYTHONPATH=/data/libs。首切后永不动
-├── start.sh              # 引导:wait-for-mount /data + uvicorn --app-dir /data + 自愈循环
-├── app/main.py           # 逻辑层 → 进 HF Storage Bucket nexus-logic/app/(挂载 /data/app),不在镜像
+├── start.sh              # 引导:wait-for-mount /data + 起原生三组件(daemon thread1 gateway + thread2 dashboard) + 自愈监死(非旧 uvicorn app.main:app)
+├── app/main.py           # 逻辑层 → 进 HF Storage Bucket nexus-logic/app/(挂载 /data/app);换装后极薄(非旧自建路由 route()),boot 逻辑见换装实况 §2.4
 ├── libs/                 # 同上(=根libs 镜像)→ Bucket nexus-logic/libs/(挂载 /data/libs);真源在根 libs/ 由 sync-logic-bucket.sh 推
 └── scripts/              # → Bucket nexus-logic/scripts/(挂载 /data/scripts)
-    ├── persist_to_r2.py
-    ├── restore_from_r2.py
-    ├── replay_packages.py
-    └── keepalive.py
+    ├── persist_to_r2.py      # 保留(litestream 互补灾备)
+    ├── restore_from_r2.py   # 保留
+    ├── replay_packages.py   # 保留
+    ├── keepalive.py          # 保留
+    └── config.yaml.template  # 模板:start.sh cmp 生 runtime config(omn provider 配置)
 ```
+> ⚠️ 换装后 `start.sh` 起原生三组件(非旧 `uvicorn --app-dir /data app.main:app`);`app/main.py` 极薄(非旧自建 Gradio route)。**现役真态见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)**。
 (无 requirements.txt — 依赖进 GHCR base 镜像 ghcr.io/i3t2y/nexus-base:stable)
 
 保活策略（用户已确认外部监测网站稳定可用）：
