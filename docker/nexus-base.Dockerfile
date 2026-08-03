@@ -186,6 +186,37 @@ RUN cd /opt/hermes-agent && \
     test -f /opt/hermes-agent/hermes_cli/web_dist/index.html && \
     echo "[base] web_dist prebuild OK -> /opt/hermes-agent/hermes_cli/web_dist/"
 
+# ── K-R8 闸门:base bake 期 prebuild ui-tui/dist/entry.js (dashboard embedded-chat TUI)──
+# hermes-agent dashboard(pid 命 `hermes dashboard --port 7860`)除 web SPA(HERMES_WEB_DIST)外,
+# 还内嵌一个 TUI聊天(/api/pty embedded chat,React+ink 终端 UI),经 `_make_tui_argv` (main.py:1932)
+# 起 `node --expose-gc <dist>/entry.js` 运行。
+#
+# `_make_tui_argv` 两条 prebuilt fast path:
+#   1.HERMES_TUI_DIR 设且该目录有 dist/entry.js → 直接 node 启(main.py:1978-1983)
+#   2._find_bundled_tui() 内置 bundle → 同(main.py:1987-1990)
+# 两路全废(我镜像未设 ENV + 未 prebuild)→ 落 main.py:1993 normal flow,_tui_need_npm_install()
+# 返 True → runtime `npm install` 死循环(上游 Dockerfile:364-374 亲证:root package-lock 描述全
+# monorepo workspace[apps/*,ui-tui,ui-tui/packages/*,web,tests-js],但镜像只装 root/web/ui-tui,
+# apps/*desktop 不装 → 永不收敛 + 并发 ENOTEMPTY → TUI "[session ended]" 502/dash tab 死)。
+#
+# 解 = 抄上游 Dockerfile:273-276 + L377:build 期 prebuild ui-tui/dist/entry.js + 设
+# HERMES_TUI_DIR 指向 → `_tui_need_npm_install` (main.py:1693) `entry.is_file() and not lock.is_file()`
+# 即 prebuilt-bundle 模式返 False → 跳 runtime install。`@hermes/ink` 是 ui-tui/packages/hermes-ink 子
+# workspace,`--workspace ui-tui` 含其 hoisted deps + devDeps(esbuild/typescript/babel build toolchain)。
+#
+# build.mjs 头注自证:"dist/entry.js,self-contained,no runtime node_modules needed" — esbuild 单文件
+# 打包 src/entry.tsx,运行期 node 直跑不需 node_modules,安全固化入镜像层。
+# 注:esbuild/typescript 等 build toolchain 在 devDependencies,故 install 不加 --omit=dev,
+#      避 NODE_ENV/inherit 致 omit=dev 静默跳 build deps build 崩(见 main.py:2040 注)。
+# 先 `npm install --workspace ui-tui`(装 hoist deps+devDeps)→ 再 `npm run build -w ui-tui`
+# (build.mjs 出 dist/entry.js)→ 验产物 → clean。
+RUN cd /opt/hermes-agent && \
+    npm install --workspace ui-tui --include=dev --no-audit --fetch-retries=5 && \
+    npm run build -w ui-tui && \
+    npm cache clean --force && \
+    test -f /opt/hermes-agent/ui-tui/dist/entry.js && \
+    echo "[base] ui-tui/dist/entry.js prebuild OK -> /opt/hermes-agent/ui-tui/dist/"
+
 # ── 切非 root ────────────────────────────────────────────────────────
 USER user
 ENV HOME=/home/user \
@@ -196,7 +227,10 @@ ENV HOME=/home/user \
     # 内核源码路径(逻辑层 import run_agent 用,只读,无需 user 写)
     HERMES_AGENT_DIR=/opt/hermes-agent \
     # K-R4:指向 bake 期 prebuild 的 dashboard SPA dist(web_server.py:135 读此 env)
-    HERMES_WEB_DIST=/opt/hermes-agent/hermes_cli/web_dist
+    HERMES_WEB_DIST=/opt/hermes-agent/hermes_cli/web_dist \
+    # K-R8:指向 bake 期 prebuild 的 TUI embedded-chat bundle(main.py:1961 _make_tui_argv 读此 env,
+    #       存 dist/entry.js → L1978 fast path 起 `node --expose-gc dist/entry.js` 跳 runtime npm install)
+    HERMES_TUI_DIR=/opt/hermes-agent/ui-tui
 
 WORKDIR $HOME/app
 
