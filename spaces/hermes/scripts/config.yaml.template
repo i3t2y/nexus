@@ -29,31 +29,91 @@ plugins:
     - nexus-r2
     - nexus-ops
 
-# ── model 段:custom provider + base_url 指 omniroute(官方正路)──
-# 参考 refs/hermes-agent/cli-config.yaml.example L99 逐字:
-#   "custom" = "Any other OpenAI-compatible endpoint. Set base_url below."
-#   别名 ollama/vllm/llamacpp 全映射 custom。
-# omniroute(nonoke/omn HF Space)= 第三方 OpenAI 兼容端点 → 属 custom 非原生 openai。
-# 用 custom(Bearer 鉴权 OpenAI /v1/chat/completions 兼容),读 OPENAI_API_KEY env(auth.py:481
-#   custom 进特殊集)。
-# ★ base_url 进 config.yaml model 段显式(非仅 env);openai 原生 provider 不信誉 base_url
-#   覆盖会走官方 api.openai.com → omniroute key 401。custom 信誉 base_url。
-# 模型名避开 glm/z-ai 前缀防 alias 触发 zai provider(auth.py:1909 glm→zai)。
-# ★ api_key 显式入 config(2026-08-03 实证修订):
-#   custom provider 取 key 在 runtime_provider.py:1266-1277 host 门控 —— host 非 openai.com/azure 时
-#   OPENAI_API_KEY 候选被跳过(L1270 `if _is_openai_url` omn host=nonoke-omn.hf.space 不命中)。
-#   `_host_derived_api_key` 从 host labels[-2] 推 `<VENDOR>_API_KEY`:nonoke-omn.hf.space → "hf" → HF_API_KEY(无)。
-#   全候选空 → L1302 fallback `"no-key-required"` → omn 收非真 key → 401 unauthorized。
-#   解:model.api_key 显式 ${OPENAI_API_KEY} → load_config `_expand_env_vars` 展开 → cfg_api_key(L1186)
-#   命中 L1268 `cfg_api_key if use_config_base_url`(provider=custom 互信 L85=True)→ 真 key 发 omn。
-# 模型名 3 段 nvidia/z-ai/glm-5.2(omn 正名,同 Claude Code CLI 实证经 omn 通):
-#   - omn 裸 glm-5.2 歧义 → 400 要求 provider/model 前缀(omn 多 provider 路由)
-#   - hermes _PROVIDER_ALIASES(L1908) key 级 exact 匹配, "z-ai" key ⊂ "nvidia/z-ai/glm-5.2" 整串
-#     非命中;且 model.provider=custom 先 resolve(L1944 即返 custom),根本不进 alias dict
-#   → 模型名整串透传 omn,hermes 不改路由。
+# ── model_catalog.excluded_providers:屏蔽全内置 canonical 商店(picker 只留 omn)──
+# 命中 model_switch.py:2453/2272/2167 三处削 section1-2 + models.dev + canonical
+# cross-check。34 canonical slugs 全列(auth.py PROVIDER_REGISTRY + models.py:1112
+# CANONICAL_PROVIDERS 实证),防未来误加凭证让内置商店露脸。
+# auto/* 非内置 = omn /v1/models 活探产物,关 discover_models 即净(非 excluded 职责)。
+# openrouter 用户拍板同屏蔽。
+# 要用某内置商店:删该 slug + 配对应 *_API_KEY env + Restart。
+model_catalog:
+  excluded_providers:
+    - nous
+    - fireworks
+    - openrouter
+    - moa
+    - novita
+    - lmstudio
+    - anthropic
+    - openai-codex
+    - openai-api
+    - alibaba
+    - xai-oauth
+    - xiaomi
+    - tencent-tokenhub
+    - nvidia
+    - copilot
+    - copilot-acp
+    - huggingface
+    - gemini
+    - vertex
+    - deepseek
+    - xai
+    - zai
+    - kimi-coding
+    - kimi-coding-cn
+    - stepfun
+    - minimax
+    - minimax-oauth
+    - minimax-cn
+    - ollama-cloud
+    - arcee
+    - gmi
+    - kilocode
+    - opencode-zen
+    - opencode-go
+
+# ── providers dict:omn 命名 provider(v12+ 正路)──
+# custom_providers 列表经 config_migrations.py _migrate_to_12 转 providers dict 并删列表,
+# 故直接写 providers dict(省 boot migration)。slug=key omn。
+# 字段集(config.py:1477 _custom_provider_entry_to_provider_config):api/name/api_key 或
+#   key_env/models/context_length/transport/extra_headers/discover_models。
+# ★ provider 引用 "custom:omn" → dashboard 显示「omn」替「Custom endpoint」
+#   (ModelPickerDialog.tsx:548 直渲染后端 row name;bare custom → 硬编码 "Custom endpoint",
+#    model_switch.py:2779;named slug → 显示该 name,model_switch.py:2872-2875)。
+# ★ discover_models: false 关活探 omn /v1/models —— 该端点返 200+ 模型含 auto/* 全灌 picker
+#   (model_switch.py:2678/2845 discover 默认 True → 2696 should_probe=...and discover and...
+#    探 /v1/models)。关后 should_probe 短路,picker 只显下面显式 models 列的。
+#   要加模型:models 块加一行 + Restart(用缓存镜像,不 git push 不触发付费墙)。
+# ★ api_key 显式 ${OPENAI_API_KEY}(2026-08-03 401 修):
+#   runtime_provider.py:1266-1277 host 门控 omn host=nonoke-omn.hf.space 不命中 openai/azure
+#   → OPENAI_API_KEY 候选跳过 → L1302 fallback "no-key-required" → omn 401。
+#   显式 api_key 命中 L1268 cfg_api_key 路径 → 真 key 发 omn。
+# transport=chat_completions(= api_mode)= runtime_provider.py 默认 → OpenAI SDK
+#   chat.completions.create() → {base_url}/chat/completions(omn 协议对齐)。
+# 前提:HF Secrets 须设 OPENAI_API_KEY=omn 真实密钥(401 修复前提)。
+providers:
+  omn:
+    api: https://nonoke-omn.hf.space/v1
+    name: omn
+    api_key: ${OPENAI_API_KEY}
+    transport: chat_completions
+    discover_models: false
+    models:
+      nvidia/z-ai/glm-5.2:
+        context_length: 128000
+
+# ── model 段:provider=custom:omn(替 bare custom)+ default=omn /v1/models raw id──
+# ★ default=nvidia/z-ai/glm-5.2:omn 真 raw id(非 hermes 自造前缀)。裸 glm-5.2 歧义 →
+#   omn 400 要求 provider 前缀(omn aggregator 多 provider 路由)。
+#   hermes chat.completions.create 路径不 strip(chat_completion_helpers.py:3100
+#   model_name=str(agent.model) 直传),整串透传 omn 不改路由。
+# ★ provider=custom:omn:not bare custom。runtime 解析 custom:<slug> 路由进 providers.omn
+#   (test_custom_provider_session_persistence _runtime_model_config 实证 custom:<slug>)。
+# ★ api_key 显式 ${OPENAI_API_KEY}(同 providers.omn,双重保险:runtime 优先 model 段 key)。
 model:
   default: nvidia/z-ai/glm-5.2
-  provider: custom
+  provider: custom:omn
   base_url: https://nonoke-omn.hf.space/v1
   api_key: ${OPENAI_API_KEY}
 
