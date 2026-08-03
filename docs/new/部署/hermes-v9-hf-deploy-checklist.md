@@ -8,7 +8,9 @@
 ## 前置:本地已完成(我执行)
 
 - [x] commit `8432594`(K 形态主代码 + base 镜像改 + V5-V8 验)
-- [x] `ghcr.io/i3t2y/nexus-base:stable` 本地 build + push GHCR(2.84GB,含 K-R6 sqlite 3.53.4 + K-R4 web_dist + messaging 子集)
+- [x] `ghcr.io/i3t2y/nexus-base:stable` 本地 build + push GHCR(2.84GB,含 K-R6 sqlite 3.53.4 + K-R4 web_dist + K-R8 ui-tui bundle + messaging 子集)
+  - ⚠️ K-R8 后(2026-08-03 commit `5e15160`)需重 build :stable 推 GHCR:加 `npm install --workspace ui-tui --include=dev && npm run build -w ui-tui` prebuild `ui-tui/dist/entry.js` + ENV `HERMES_TUI_DIR=/opt/hermes-agent/ui-tui`(镜像长大→2.97GB)。否则 dashboard embedded-chat 落 runtime npm install 死循环 → "Chat unavailable: 1"。
+  - 本地验(2026-08-03):build exit 0 + 镜像内 `HERMES_TUI_DIR` 设 + `ui-tui/dist/entry.js` 3.66MB 在 + `web_dist/index.html` 在 + 2.97GB 过 HF <10GB 阈值。待用户 push GHCR + HF rebuild。
 - [x] git push 分支 `feat/hermes-coreswap-nousresearch` 到 GitHub
 - [ ] HF Space `sonoke/h` Settings Sources 同步分支改指 `feat/hermes-coreswap-nousresearch`(K 形态在此分支非 main)+ README 改一字符触发 rebuild 拉 :stable(下步)
 

@@ -36,7 +36,7 @@ Nexus 唯一入口。换装 **NousResearch Hermes Agent** 作内核(github.com/N
 
 1. **逻辑层进 HF Storage Bucket `/data` rw 挂载** —— 改逻辑只推 Bucket + Restart,不触 HF rebuild 付费墙
 2. **Dockerfile 永续墓碑** —— `ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable` + 仅 `COPY start.sh`(逻辑层在镜像外)
-3. **依赖进 GHCR base 镜像** —— hermes-agent + 蔓延依赖 + litestream + K-R6 自编 libsqlite3 3.53.4(≥3.51.3 防 fresh DB 强 DELETE 致 litestream 静默 off)+ K-R4 web_dist 预建 + messaging 子集(aiohttp/telegram/discord/brotlicffi)全在 base,逻辑层零 `pip install`
+3. **依赖进 GHCR base 镜像** —— hermes-agent + 蔓延依赖 + litestream + K-R6 自编 libsqlite3 3.53.4(≥3.51.3 防 fresh DB 强 DELETE 致 litestream 静默 off)+ K-R4 web_dist 预建 + K-R8 ui-tui/dist/entry.js 预建(ENV `HERMES_TUI_DIR=/opt/hermes-agent/ui-tui`,消 dashboard embedded-chat runtime npm install 死循环 → "Chat unavailable")+ messaging 子集(aiohttp/telegram/discord/brotlicffi)全在 base,逻辑层零 `pip install`
 
 state.db 经 litestream WAL→R2 复制(铁律 L8)续命;Supabase 四表经 `persist_to_r2.py` 快照(灾备,与 litestream 互补)。
 
