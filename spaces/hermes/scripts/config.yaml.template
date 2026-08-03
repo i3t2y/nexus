@@ -61,6 +61,17 @@ disabled_toolsets:
 database:
   journal_mode: wal   # K-R6 litestream 需 WAL 跟踪
 
+# ── kanban dispatcher 关闭(永续砍 extras:nexus 无 kanban board)──
+# 默认 dispatch_in_gateway=true → 每 tick 无条件 connect board=default 库
+#   (kanban_watchers.py:1218 _tick_once_for_board)。
+# HF /data/.hermes/kanban.db 首启无 board 库,connect 跑 schema+migration
+#   报 sqlite3.OperationalError: unable to open database file 死循环 traceback 淹日志。
+# notifier_watcher 无订阅时 count_notify_subs 早退(:267)不开库,无害保留。
+# epoxy 关 dispatcher 即消死循环(gateway/run.py:11041 loop 变 no-op)。
+# env 备选:HERMES_KANBAN_DISPATCH_IN_GATEWAY=false(kanban_watchers.py:991)。
+kanban:
+  dispatch_in_gateway: false
+
 # telegram/discord config(平台 adapter 由此起,凭证走 env 非 yaml):
 #   TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN env 注。
 #   HF DNS 封 IM 域(K-R7):telegram 靠 hermes 原生 telegram_network.py DoH+fallback IP 自解;
