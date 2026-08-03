@@ -46,8 +46,13 @@ plugins:
 #   全候选空 → L1302 fallback `"no-key-required"` → omn 收非真 key → 401 unauthorized。
 #   解:model.api_key 显式 ${OPENAI_API_KEY} → load_config `_expand_env_vars` 展开 → cfg_api_key(L1186)
 #   命中 L1268 `cfg_api_key if use_config_base_url`(provider=custom 互信 L85=True)→ 真 key 发 omn。
+# 模型名 3 段 nvidia/z-ai/glm-5.2(omn 正名,同 Claude Code CLI 实证经 omn 通):
+#   - omn 裸 glm-5.2 歧义 → 400 要求 provider/model 前缀(omn 多 provider 路由)
+#   - hermes _PROVIDER_ALIASES(L1908) key 级 exact 匹配, "z-ai" key ⊂ "nvidia/z-ai/glm-5.2" 整串
+#     非命中;且 model.provider=custom 先 resolve(L1944 即返 custom),根本不进 alias dict
+#   → 模型名整串透传 omn,hermes 不改路由。
 model:
-  default: claude-sonnet-5
+  default: nvidia/z-ai/glm-5.2
   provider: custom
   base_url: https://nonoke-omn.hf.space/v1
   api_key: ${OPENAI_API_KEY}
