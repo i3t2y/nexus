@@ -16,9 +16,12 @@ Nexus Honcho launcher shim(2026-08-03)。
     (orig lifespan src/main.py:116 validate_embedding_schema 验表必须先建好)。
 
 顺序铁律:provision_db 必先于 deriver task + orig lifespan。
-  - init_db 同步 await 完成 ← 建表+extension+schema
+  - init_db 同步 await 完成 ← 建表+extension+schema(migrations 硬编 vector(1536) 列)
+  - configure_embeddings --yes ← ALTER 列 1536→EMBEDDING_VECTOR_DIMENSIONS(本部 1024 匹 nv-embedqa-e5-v5)
+    honcho 官方 bootstrap 序:init_db → configure_embeddings → start API。migrations 不读 env 硬编 1536,
+    故须第二步 ALTER(独立进程 subprocess 跑,自带 engine.dispose 不破主 engine,subprocess 继承 env)。
   - 再 create_task deriver(立即返 task 对象,polling 在 loop 上跑)
-  - 再 await orig_lifespan(yield 阻塞服务 loop;此时表已建,validate_embed 过门)
+  - 再 await orig_lifespan(yield 阻塞服务 loop;此时列 dim 已配,validate_embedding_schema 过门)
   - deriver polling 与 fastapi 请求同 loop 协程级并发互不阻塞
 
 shutdown:finally 取消 deriver task + await 收异常(tags except 不裸 except)。
@@ -47,8 +50,9 @@ _INIT_DB_RETRIES = 3
 _INIT_DB_BACKOFF = 1.0
 
 
-async def _provision_db_with_retry() -> None:
-    """init_db 重试 3 次(仅 transient 抖动)。失败 fail-loud 抛出。"""
+async def _run_migrations_with_retry() -> None:
+    """init_db(alembic upgrade head + CREATE EXTENSION vector + CREATE SCHEMA)
+    重试 3 次(仅 transient 抖动)。失败 fail-loud 抛出。"""
     from src.db import init_db
 
     last_exc: Exception | None = None
@@ -67,6 +71,41 @@ async def _provision_db_with_retry() -> None:
     raise RuntimeError(f"init_db failed after {_INIT_DB_RETRIES} attempts: {last_exc}") from last_exc
 
 
+async def _configure_embeddings() -> None:
+    """migrations 建 vector(1536) 硬编列,与 EMBEDDING_VECTOR_DIMENSIONS 可能不匹配。
+    跑 scripts/configure_embeddings.py --yes ALTER 列到目标 dim(独立进程,自带 engine.dispose,
+    不破主 engine)。
+
+    honcho 官方 bootstrap 序(脚本头注):alembic upgrade head → configure_embeddings → start API。
+    本步补序第 2 行。已匹配时脚本自判 no-op 跳过(不 ALTER)。
+    """
+    import sys
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "scripts/configure_embeddings.py", "--yes",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, _ = await proc.communicate()
+    rc = proc.returncode
+    # script 输出(成功路径含 ALTER 计划+结果;no-op 路径含 "already at dim ... skipping")
+    logger.info("configure_embeddings output:\n%s", stdout.decode() if stdout else "(empty)")
+    if rc != 0:
+        raise RuntimeError(f"configure_embeddings.py exited {rc}")
+
+
+async def _provision_db() -> None:
+    """完整 bootstrap:migrations → 配置 embedding 维度。
+
+    顺序铁律(init_db 必先,configure_embeddings 读已建列):
+      1. init_db(alembic upgrade head:建 22 表含 documents.embedding vector(1536) + message_embeddings)
+      2. configure_embeddings --yes:ALTER 列 1536→EMBEDDING_VECTOR_DIMENSIONS(本部署 1024 匹 nv-embedqa-e5-v5)
+    后 orig lifespan validate_embedding_schema 验目标 dim==列 dim 过门。
+    """
+    await _run_migrations_with_retry()
+    await _configure_embeddings()
+
+
 async def _start_deriver() -> asyncio.Task:
     """起 deriver polling 作 api 同 loop 的后台 task。"""
     from src.deriver.queue_manager import main as deriver_main
@@ -79,8 +118,8 @@ async def _start_deriver() -> asyncio.Task:
 @asynccontextmanager
 async def lifespan(_app):  # noqa: ANN001 — FastAPI 传 app 实例,shim 不用
     """shim lifespan:provision + deriver task + 进 honcho 原生 lifespan。"""
-    # ── 1. 建表 + extension + migrate(必须先于 deriver + orig lifespan)──
-    await _provision_db_with_retry()
+    # ── 1. 建表 + extension + migrate + 配置 embedding 维度(必须先于 deriver + orig lifespan)──
+    await _provision_db()
 
     # ── 2. deriver polling task(同 loop,立即返不阻塞)──
     deriver_task = await _start_deriver()

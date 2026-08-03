@@ -285,3 +285,163 @@ build 段(无需凭据)100% 通。run 段需凭据:
 - `/tmp/honcho_check/honcho/src/config.py`(env 前缀 + resolve_model_config + _fill_defaults + _default_embedding_api_key 实证)
 - `/tmp/honcho_check/honcho/src/startup/embedding_validator.py`(validate_embedding_schema fail-closed)
 - `/tmp/honcho_check/honcho/src/db.py`(init_db + QueuePool + CREATE EXTENSION vector)
+
+---
+
+## §NIM NVIDIA NIM 免费模型替代占位(2026-08-03)
+
+占位 `DERIVER/...MODEL=gpt-5.4-mini` + `EMBEDDING_MODEL_CONFIG__MODEL=text-embedding-3-small` 换 NVIDIA NIM(integrate.api.nvidia.com)免费模型。omniroute 上游 = NIM key pool(`NIM_KEYS` env,逗号分隔,模型名透传到 NIM,见 `docs/new/Nexus集群永续架构最强模板.md:1398`)。故 **model id 用 NIM 原生名(含 provider 前缀),base_url 仍指 omn 不动**。
+
+### N1 honcho openai 后端 NIM 兼容核证(源码级)
+
+- `src/llm/backends/openai.py:73 _uses_max_completion_tokens`:仅 `gpt-5*`/`o-series` 用 `max_completion_tokens`,其余所有(NIM llama/qwen/mistral)用 `max_tokens`——**NIM 兼容**。
+- `openai.py:209-211` tiktoken `encoding_for_model` 失败回退 `cl100k_base` 不崩——NIM 模型名未注册 tiktoken 走 fallback。
+- `src/config.py:30 _EMBEDDING_KNOWN_REJECTING_MODELS = frozenset({"text-embedding-ada-002"})`:**NIM 嵌入模型全不在 reject 列表**。
+- `src/config.py:773 resolve_send_dimensions`:模型在 reject 命名集合 → `False`;否则若 `EMBEDDING.VECTOR_DIMENSIONS` 显式设 → `True`。`.env.example` 设了 `EMBEDDING_VECTOR_DIMENSIONS=1024` → `send_dimensions=True` → honcho 传 `dimensions=1024` 给 NIM embeddings API。**若 NIM embedding API 不接受 `dimensions` 参数 → 400**(R1 实测必须确认)。
+- `src/embedding_client.py:172-175,264` send_dimensions 控制 dimensions 参数传不传;`L218-222 _validate_embedding_dimensions` 校验返回维度==EMBEDDING.VECTOR_DIMENSIONS,fail-closed。
+
+### N2 102 模型清单(integrate.api.nvidia.com/v1/models 已抓全,/tmp/nim_models.json)
+
+无认证 `/v1/models` 返 102 模型。`z-ai/glm-5.2` 在列(omn 透传实证,nexus hermes 即经此出)。摘要分类:
+
+**文本生成候选(NIM 免费档,经 omn 透传)**:
+- `nvidia/llama-3.1-nemotron-nano-8b-v1`(8B,小快省 — N3 初选,后推翻:中文不支持 + HF CPU-basic 假设推翻,降备2)
+- `nvidia/llama-3.1-nemotron-70b-instruct` (70B 大,质量高 CPU-basic 慢慎)
+- `meta/llama-3.1-8b-instruct`、`meta/llama-3.3-70b-instruct`
+- `qwen/qwen2.5-7b-instruct`、`qwen/qwen2.5-coder-32b-instruct`
+- `mistralai/mistral-nemo-12b-instruct`
+- `deepseek-ai/deepseek-r1`、`deepseek-ai/deepseek-r1-distill-qwen-1.5b`
+- `z-ai/glm-5.2`(omn 透实证在列)
+
+**嵌入候选(12 个)+ 维度实证(HF config.json hidden_size 代理;gated model R1 实测)**:
+
+| model id | dim | max tokens | 状态 | 来源 |
+|---|---|---|---|---|
+| `baai/bge-m3` | 1024 | 8192 | 候选(N3 初选后推翻:R1 实测 dimensions 截断 400 拒) | HF config.json(XLM-Roberta,多语言 dense+sparse+colbert,public ungated) |
+| `snowflake/arctic-embed-l` | 1024 | 512 | 备选(短上下文) | HF config.json(BERT,public) |
+| `nvidia/llama-nemotron-embed-1b-v2` | 2048 | 131072 | 备选(长上下文) | HF config.json(LlamaBidirectional,public ungated) |
+| `nvidia/nv-embed-v1` | 4096 | ? | R1 实测 | HF gated 401 无法读 |
+| `nvidia/nv-embedqa-e5-v5` | 1024 | ? | **嵌入选定**(N3, R1 实测 omn /v1/embeddings 200 维 1024 中文通) | HF gated 401;omn 透传实测定 |
+| `nvidia/embed-qa-4` | ? | ? | R1 实测 | HF gated 401 |
+| `nvidia/llama-3.2-nv-embedqa-1b-v1` | ? | ? | R1 实测 | 新版 |
+| `nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1` | ? | ? | R1 实测 | VLM 多模态 |
+| `nvidia/llama-nemotron-embed-vl-1b-v2` | ? | ? | R1 实测 | VLM |
+| `nvidia/nemotron-3-embed-1b` | ? | ? | R1 实测 | 新 |
+| `nvidia/nv-embedcode-7b-v1` | ? | ? | R1 实测 | 代码嵌入 |
+| `snowflake/arctic-embed-l` | 1024 | 512 | (重复确认) | 已列 |
+
+### N3 选型落定(2026-08-03 R1 实测 + 用户主选重判决)
+
+**文本生成全 7 feature(DERIVER/SUMMARY/DIALECTIC minimal/DREAM deduction+induction)主选**: `deepseek-ai/deepseek-v4-flash`(284B/13B active MoE)。用户拍主选重判(续记忆 `nexus-honcho-model-selection-2026-08-03` 未决项1"回家再议")。`.env.example` + `run-local.sh` 全 7 feature 已落 v4-flash。
+
+选定理由(记忆核证源):
+- **中文母语**:Chinese-SimpleQA 评证(DeepSeek 中国实验室);honcho=用户记忆 provider,hermes 用户场景中文为主故 V4 Flash 胜 30b 中文弱 + 8b 中文不支持。
+- **tool calling 原生无 thinking 限制**:arxiv DeepSeek-V4 技报 + DeepSeek API docs agent/codex 适配实证(arxiv 2606.19348)。**故不需 `THINKING_EFFORT` 配置**——30b nemotron-3 tool calling 须 detailed thinking off(NVIDIA NIM docs 1.10.0 function-calling.html),V4 Flash 无此限,降配置复杂度。
+- **structured JSON 原生**:DeepSeek API docs change-log V4-Flash-0731 三 reason mode + Codex 适配 + Tools;build.nvidia.com model card structured/tool/agent 实证。
+- **活跃无弃用风险**:build.nvidia.com 4-23 上线常青 2M API calls/30d;2M API calls/30d;v3 系入 Alibaba 2026-10-10 弃用表但 **v4 系未入**,旁证活跃。
+- 13B active 省 + 快(p50 TTFT 394ms,184 tok/s,284B MoE)。
+- omn NIM id `deepseek-ai/deepseek-v4-flash`(继 [[nexus-hermes-v9-sonoke-deploy]] glm-5.2 经 omn 通实证后第二 deepseek 直名透传)。
+
+**档位**:
+- 主 `deepseek-ai/deepseek-v4-flash`(.env/run-local 全 7 feature 落)。
+- 备1 `nvidia/nemotron-3-nano-30b-a3b`(30B/3.5B active,省 active;tool calling 须 `THINKING_EFFORT` 显设 detailed thinking off,V4 Flash 撞限速降级时切此需补配)。
+- 备2 `nvidia/llama-3.1-nemotron-nano-8b-v1`(8B 纯英文限速兜底 ~40 RPM,中文不支持致命)。
+
+前序 § 此处初选 8b 基于「HF CPU-basic 推理 latency 友」假设已**推翻**(见 .env.example 顶注:honcho 经 omn 远程调 NIM,GPU 推理在 integrate.api.nvidia.com 非 HF CPU 本地跑,约束 = omn 面板激活 + ~40 RPM + API 超时非 HF RAM/CPU)。
+
+**嵌入(R1 实测定 seule)**: `nvidia/nv-embedqa-e5-v5`,dim=1024。**前序 § 初选 `baai/bge-m3` 已推翻** — R1 实测(见 N4):omn `/v1/embeddings` 对 bge-m3 + `dimensions` 截断参数 HTTP 400 拒绝(non-matryoshka 固定维度不支持截断);选 embedqa 因 omn 透返原生 1024 Chinese 通(经 omn /v1/embeddings HTTP 200 实证,见 .env.example:56,L88-103)。
+
+**`EMBEDDING_VECTOR_DIMENSIONS=1024`**(原 1536=text-embedding-3-small,改 embedqa 原生 1024)+ `EMBEDDING_MODEL_CONFIG__DIMENSIONS_MODE=never`(强制不传 dimensions,embedqa 非 matryoshka 拒截断)。launcher `_configure_embeddings` ALTER 列 1536→1024 匹配。
+
+### N4 R1 闸门 `dimensions` 参数风险(已实测闭环)
+
+前序 § 此处预置 bge-m3 + dimensions 传 1024 作 R1 待测项。**R1 实测结果**(2026-08-03):
+
+- `nv-embedqa-e5-v5` 经 omn `/v1/embeddings` 返 HTTP **200** + 1024 维向量,中文通 → **选定**。
+- bge-m3 + `dimensions` 截断 → HTTP **400** `KeyError: data`(非 matryoshka 拒截断)→ bge-m3 路废。
+- `nv-embedqa-e5-v5` + `dimensions` 截断 → 同 400 拒(固定 1024 非 matryoshka)→ **必须 `DIMENSIONS_MODE=never`** 强制不传 dimensions,honcho 取 omn 原生 1024 与 `EMBEDDING_VECTOR_DIMENSIONS=1024` 校验过门(`embedding_validator.py:61` fail-closed 过门)。
+
+`resolve_send_dimensions`(config.py:773):模型不在 `_EMBEDDING_KNOWN_REJECTING_MODELS`(config.py:30,仅 `text-embedding-ada-002`)+ VECTOR_DIMENSIONS 显设 → auto 路默认 send_dimensions=True 传 dimensions=N。embedqa 不在 reject 故 auto 路会传 dimensions 致 400——**显设 `DIMENSIONS_MODE=never` 覆盖 auto 路**解(零改源,resolve_send_dimensions never→send_dimensions=False)。注:`_EMBEDDING_KNOWN_REJECTING_MODELS` 仅含 ada-002,加 embedqa 需改源(违背 shim 零 diff),故走 env 覆盖非改 reject 集。
+
+### N5 实测命令(R1 已跑通,留作复检)
+
+```bash
+# 1) 列 omn 透传模型(确认 nv-embedqa-e5-v5 + 30b/v4flash 在列)
+curl -sS https://nonoke-omn.hf.space/v1/models -H "Authorization: Bearer $OMN_KEY" | jq '.data[].id' | grep -E 'embedqa-e5-v5|nemotron-3-nano-30b|v4-flash'
+# 2) 嵌入测(核心:确认 embedqa 1024 返 + dimensions never 不传)
+curl -sS https://nonoke-omn.hf.space/v1/embeddings \
+  -H "Authorization: Bearer $OMN_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"nvidia/nv-embedqa-e5-v5","input":"hello"}' | jq '.data[0].embedding | length'
+# 期 1024(dimensions 不传经 DIMENSIONS_MODE=never;若传 dimensions 则 400 KeyError data)
+# 3) 文本生成测(v4-flash 主选)
+curl -sS https://nonoke-omn.hf.space/v1/chat/completions \
+  -H "Authorization: Bearer $OMN_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-ai/deepseek-v4-flash","max_tokens":32,"messages":[{"role":"user","content":"ping"}]}'
+```
+
+---
+
+## §N6 H-7.1 首跑实证 + 双根因 diag(2026-08-03)
+
+H-7.1 首跑 docker build+run 实证。镜像已建 honcho-hf-local,docker run 启动。
+
+### 实证通过项(shim 全核坐实)
+
+1. **shim lifespan 替换实证通过**:`importing honcho app` → `lifespan injected → launcher's lifespan(provision+deriver+orig)`。`app.router.lifespan_context` 运行时替换工作,真进 launcher 版(非镜像内静态 `is not` 验,此是真 lifespan 执行)
+2. **tenacity 重试实证通过**:`attempt 1/3` → `attempt 2/3` → `attempt 3/3`,launcher `_provision_db_with_retry` 3 次固定 backoff 1s 工作正常
+3. **fail-closed 拒裸奔实证通过**:`RuntimeError: init_db failed after 3 attempts` + `Application startup failed. Exiting`。DB 不通即退,不降级空跑
+4. **uvicorn 7860 进程起**:`Started server process [1]` + `Waiting for application startup`
+
+shim + Dockerfile + 重试 + fail-closed 全实证正确,本侧代码无 bug。
+
+### 失败根因(双,均 Neon 侧非本侧代码)
+
+**根因 1:DSN 字面 `DB` 占位未换真值**
+
+日志最关键一行(首次 attempt):
+```
+hostaddr: '54.92.227.85': connection failed: ERROR: database "DB" does not exist
+```
+Neon 连上了(IP 54.92.227.85 通),但 `database "DB" does not exist`——DSN 里数据库名仍是占位字面 `DB`。`.env.example` 写 `USER:PASS@.../DB?sslmode=require`,docker run 注入 DB_CONNECTION_URI 时用了占位未改真数据库名。
+
+**解**:docker run 用 Neon 真 DSN(真 USER:PASS + 真 data库名如 `neondb`/`sonoke-honcho`/`main`)。需用户给 Neon 控制台真值。
+
+**根因 2:`DB_CONNECT_TIMEOUT_SECONDS` 默认 2s < Neon 冷启 wake 5-30s**
+
+源码实证:
+- `src/db.py:19-24 connect_args`:`"connect_timeout": settings.DB.CONNECT_TIMEOUT_SECONDS`
+- `src/config.py:689-690 DBSettings.CONNECT_TIMEOUT_SECONDS: Annotated[int, Field(default=2, gt=0, le=60)] = 2`
+
+**每连接尝试只等 2 秒**。Neon scale-to-zero 免费档 idle 后冷启 wake 一般 5-30s,2s 必然不够 → `connection timeout expired`(日志 3.215.191.145/3.227.144.24/54.92.227.85 多 IP 轮询各 timeout expired)。
+
+**解**:`DB_CONNECT_TIMEOUT_SECONDS=30` env(honcho 自带,调 30s 给 Neon cold start wake 窗口)。上限 60(Field le=60)。**不需改源码,不需 DSN query param**——honcho 自身 connect_args 走此 env。
+
+### IPv6 `Network is unreachable` 忽略
+
+日志 IPv6 hostaddr(2600:1f10:...)报 Network is unreachable——本机/容器无 IPv6 出站,psycopg 自动 fallback IPv4。属正常,非问题。
+
+### 下次 run 完整 env 集合(H-7.1 重跑)
+
+```bash
+docker run --rm -p 7860:7860 \
+  -e DB_CONNECTION_URI="postgresql+psycopg://<真USER>:<真PASS>@ep-wild-field-auxqpshl-pooler.c-10.us-east-1.aws.neon.tech/<真DB名>?sslmode=require" \
+  -e DB_CONNECT_TIMEOUT_SECONDS=30 \
+  -e LLM_OPENAI_API_KEY="<omn bearer>" \
+  -e AUTH_USE_AUTH=true -e AUTH_JWT_SECRET="test-secret-xxxx" \
+  -e DERIVER_MODEL_CONFIG__TRANSPORT=openai \
+  -e DERIVER_MODEL_CONFIG__MODEL=deepseek-ai/deepseek-v4-flash \
+  -e DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL=https://nonoke-omn.hf.space/v1 \
+  -e EMBEDDING_MODEL_CONFIG__TRANSPORT=openai \
+  -e EMBEDDING_MODEL_CONFIG__MODEL=nvidia/nv-embedqa-e5-v5 \
+  -e EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=https://nonoke-omn.hf.space/v1 \
+  -e EMBEDDING_MODEL_CONFIG__DIMENSIONS_MODE=never \
+  -e EMBEDDING_VECTOR_DIMENSIONS=1024 \
+  -e CACHE_ENABLED=false -e METRICS_ENABLED=false \
+  honcho-hf-local
+# 期(migrations OK 后):
+#   "migrations OK" → "deriver task created on api event loop" →
+#   uvicorn "Uvicorn running on http://0.0.0.0:7860"
+# curl -sS http://localhost:7860/health  期 {"status":"ok"}
+```
+
+注意 host 日志显示 `ep-wild-field-auxqpshl-pooler`(非 .env.example 占位 ep-xxx),用户 Neon 真 endpoint 是此值,DSN 须用真值。

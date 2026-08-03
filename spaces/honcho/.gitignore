@@ -1,0 +1,4 @@
+# 本地测试脚本含真值占位,跑后改回或删。真 DSN + omn key 不入 git。
+run-local.sh
+.env
+*.local
