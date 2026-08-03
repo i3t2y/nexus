@@ -39,10 +39,18 @@ plugins:
 # ★ base_url 进 config.yaml model 段显式(非仅 env);openai 原生 provider 不信誉 base_url
 #   覆盖会走官方 api.openai.com → omniroute key 401。custom 信誉 base_url。
 # 模型名避开 glm/z-ai 前缀防 alias 触发 zai provider(auth.py:1909 glm→zai)。
+# ★ api_key 显式入 config(2026-08-03 实证修订):
+#   custom provider 取 key 在 runtime_provider.py:1266-1277 host 门控 —— host 非 openai.com/azure 时
+#   OPENAI_API_KEY 候选被跳过(L1270 `if _is_openai_url` omn host=nonoke-omn.hf.space 不命中)。
+#   `_host_derived_api_key` 从 host labels[-2] 推 `<VENDOR>_API_KEY`:nonoke-omn.hf.space → "hf" → HF_API_KEY(无)。
+#   全候选空 → L1302 fallback `"no-key-required"` → omn 收非真 key → 401 unauthorized。
+#   解:model.api_key 显式 ${OPENAI_API_KEY} → load_config `_expand_env_vars` 展开 → cfg_api_key(L1186)
+#   命中 L1268 `cfg_api_key if use_config_base_url`(provider=custom 互信 L85=True)→ 真 key 发 omn。
 model:
   default: claude-sonnet-5
   provider: custom
   base_url: https://nonoke-omn.hf.space/v1
+  api_key: ${OPENAI_API_KEY}
 
 # top-level(非 nested):各平台启用的 toolset 列表。
 # hermes-* 是平台自带 toolset; nexus 是 nexus-r2 注册的下游 bridge toolset。
