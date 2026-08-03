@@ -30,7 +30,7 @@ MODE="push"
 case "${1:-}" in
   --dry-run)   FLAGS+=(--dry-run);;
   --verify)    MODE="verify";;
-  "")          FLAGS+=(--delete);;
+  "")          :;;
   *)           echo "未知参数: $1(支持 --dry-run / --verify / 空=推送)"; exit 2;;
 esac
 
@@ -58,7 +58,12 @@ echo "[sync] staged: app + scripts + libs (排除 __pycache__)"
 find "$STAGE" -type f | wc -l | xargs echo "[sync] 文件数:"
 
 if [ "$MODE" = "push" ]; then
-  echo "[sync] → $DEST (flags 含 --token <脱敏>,不回显)"
+  # 永不删 remote:Bucket 同时是 Space runtime 写回区(/data/.hermes 心跳 + plugin
+  # staged 副本),--delete 会清这些 runtime 文件。--no-delete 默认 + --exclude .hermes
+  # 双保险,只增改逻辑真源,不碰 runtime 写回层。
+  FLAGS+=(--no-delete)
+  FLAGS+=(--exclude ".hermes/*")
+  echo "[sync] → $DEST (只增改逻辑层,不删 runtime .hermes,不回显 HF_TOKEN)"
   hf buckets sync "$STAGE/." "$DEST" "${FLAGS[@]}"
   echo "[sync] 完成。Space Settings → Restart 即生效(不触发 rebuild,不触发付费墙)。"
   exit 0
