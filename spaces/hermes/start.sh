@@ -17,23 +17,26 @@ export PYTHONPATH="/data/libs:${PYTHONPATH:-}"
 echo "[start] BASE_IMAGE=${BASE_IMAGE:-<unset-from-Dockerfile>}"
 
 APP_DIR="${HERMES_APP_DIR:-/data}"
-LOG_DIR="${HERMES_LOG_DIR:-/data/logs}"
+# LOG_DIR 移出 bucket FUSE,放容器本地盘 /opt/data(与 HERMES_HOME 同盘)。
+# 根因:HF /data 实为 bucket mount(FUSE/Xet),日志写 FUSE 慢且与 state 同区割裂。
+# /opt/data 本地盘 ephemeral 但重启不损(日志非关键持久,核心四表在 Supabase+R2)。
+LOG_DIR="${HERMES_LOG_DIR:-/opt/data/logs}"
 
 # ─────────────────────────────────────────────────────────────
 # 等待 Bucket 挂载就绪(/data 仅 runtime,挂载于容器启动前完成)
-# 判断点:/data/libs/storage/__init__.py + /data/app/main.py + /data/scripts/litestream.yml
+# 判断点:/data/libs/storage/__init__.py + /data/app/main.py
 #        + /data/scripts/config.yaml.template + /data/scripts/plugins/nexus-r2/dashboard/manifest.json
-# 五存才进 boot;最多 30s;超时试 hf CLI bootstrap fallback 拉 Bucket;仍败进 while 5s 自愈重试
+# 四存才进 boot;最多 30s;超时试 hf CLI bootstrap fallback 拉 Bucket;仍败进 while 5s 自愈重试
+# (★2026-08-05 删 litestream.yml 判断点:litestream 全段弃,A 方案移 HERMES_HOME 出 bucket)
 # ─────────────────────────────────────────────────────────────
 wait_for_mount() {
   local key_pkg="$APP_DIR/libs/storage/__init__.py"
   local key_app="$APP_DIR/app/main.py"
-  local key_ls="$APP_DIR/scripts/litestream.yml"
   local key_cfg="$APP_DIR/scripts/config.yaml.template"
   local key_plugin="$APP_DIR/scripts/plugins/nexus-r2/dashboard/manifest.json"
   local waited=0
   while [ $waited -lt 30 ]; do
-    if [ -f "$key_pkg" ] && [ -f "$key_app" ] && [ -f "$key_ls" ] \
+    if [ -f "$key_pkg" ] && [ -f "$key_app" ] \
        && [ -f "$key_cfg" ] && [ -f "$key_plugin" ]; then
       echo "[start] bucket mounted OK (waited ${waited}s)"
       return 0
@@ -71,9 +74,27 @@ fi
 # 挂载就绪后建日志目录 + HERMES_HOME(rw /data 下,跨重启持久)
 mkdir -p "$LOG_DIR" 2>/dev/null || echo "[start] WARN: mkdir $LOG_DIR failed (mount not ready?)"
 
-# ── Hermes Agent 内核永续层:HERMES_HOME + 插件双目录 + config + litestream ──
-export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
-mkdir -p "$HERMES_HOME/plugins" 2>/dev/null || echo "[start] WARN: mkdir $HERMES_HOME failed (mount not ready?)"
+# ── Hermes Agent 内核永续层:HERMES_HOME + 插件双目录 + config ──
+# ★2026-08-05 治本方案 A(根因实证):
+#   HFM State Space `sonoke/h` 长期 "database disk image is malformed" 致 dashboard chat
+#   连续 "No reply"。根因 = /data 实为 HF Bucket mount(FUSE/Xet 后端,非 ext4)+ litestream
+#   replicate 旁路进程并发读 state.db WAL → SQLite-被-sidebar-进程 corruption(同构雷:Tropy/
+#   OneDrive/sync-folder SQLite 官方实证:SQLite 不允许他进程并发改文件)。
+#   hermes 原生畸形自愈跑过(`_try_runtime_fts_rebuild`)但 retry 仍 malformed = 库整体损。
+# 治本:HERMES_HOME 移出 bucket FUSE,放容器本地盘 /opt/data(本地盘 ext4/overlay,WAL 正常稳定,
+#   无 FUSE 后端无旁路进程)。跟两实战项目一致:HermesFace + HuggingMes 都用 /opt/data 本地 SQLite,
+#   都不挂 bucket 都无 litestream → 0 malformed 报告。
+# 代价:重启丢 dashboard 会话历史(transient state.db ephemeral);核心四表 agent_states/
+#   task_logs/long_memory/skills_index 在 Supabase+R2 双写(persist_to_r2.py)不丢,AI 长期记忆不丢。
+# state.db 仅管 dashboard 会话历史索引,非 AI 记忆源。
+# fs-type 零臆断验证:keepalive.py boot 期 df -T /opt/data /data → 日志坐实 /opt/data ext4 ext4/overlay。
+mkdir -p /opt/data 2>/dev/null || echo "[start] WARN: mkdir /opt/data failed"
+export HERMES_HOME="${HERMES_HOME:-/opt/data/.hermes}"
+mkdir -p "$HERMES_HOME/plugins" 2>/dev/null || echo "[start] WARN: mkdir $HERMES_HOME failed"
+mkdir -p "${HERMES_HOME}/home" 2>/dev/null || echo "[start] WARN: mkdir ${HERMES_HOME}/home failed"
+# hermes get_subprocess_home()(hermes_constants.py:886)容器内自动设 subprocess HOME={HERMES_HOME}/home;
+#   HERMES_HOME 与 OS HOME(=/home/user)刻意分离(L859-861 注释:HERMES_HOME scopes Hermes state,
+#   HOME 为 OS user)。我们 mkdir 此目录保子进程 HOME 落地有路径。
 
 # nexus 两 plugin 从 Bucket 逻辑层拷到 HERMES_HOME/plugins(K1 决策-3 两 plugin 目录)
 #   - nexus-r2: 三下游 bridge tool(toolset=nexus)+ R2 文件 CRUD dashboard tab
@@ -107,23 +128,8 @@ else
   echo "[start] WARN: config.yaml.template missing, $HERMES_HOME/config.yaml not seeded"
 fi
 
-# litestream 恢复 state.db(WAL→R2,铁律 L8):先 restore 到临时再原子 mv;
-# 首启 R2 无副本 → restore 失败即开新库(hermes gateway 首构造自动建 state.db)
-LS_CFG="$APP_DIR/scripts/litestream.yml"
-if [ -f "$LS_CFG" ]; then
-  echo "[start] litestream restore state.db ..."
-  if litestream restore -config "$LS_CFG" -o /tmp/ls_restore.sqlite >/dev/null 2>&1; then
-    mkdir -p "$HERMES_HOME"
-    mv /tmp/ls_restore.sqlite "$HERMES_HOME/state.db"
-    echo "[start] litestream restore OK → $HERMES_HOME/state.db"
-  else
-    echo "[start] litestream restore skipped (R2 首启无副本,新开库)"
-  fi
-  # 后台起 WAL 复制(sidecar);fail-open(进程死仅 WARN,不拦 boot)
-  nohup litestream replicate -config "$LS_CFG" >"$LOG_DIR/litestream.log" 2>&1 &
-  LS_PID=$!
-  echo "[start] litestream replicate up pid=$LS_PID (WAL→R2 sync 10s,L8)"
-fi
+# A 方案后 litestream 全段弃(state.db 移出 bucket FUSE 本地盘,无旁路进程干扰 WAL,
+#   SQLite 复一致稳定;持久化靠 persist_to_r2.py 核心四表 Supabase+R2,不靠 state.db 快照)。
 
 echo "[start] replay packages..."
 python "$APP_DIR/scripts/replay_packages.py" replay || echo "[start] replay skipped (no log yet)"
@@ -161,16 +167,6 @@ while true; do
   python -c "import sys; sys.path.insert(0,'$APP_DIR'); from app.main import boot; boot()"
   code=$?
   echo "[start] boot exited code=$code, recheck mount + restart in 5s..."
-  # litestream watchdog:boot 死后查 LS 仍活否;fail-open(死仅 WARN,不退)
-  if [ -n "${LS_PID:-}" ] && ! kill -0 "$LS_PID" 2>/dev/null; then
-    echo "[start] WARN: litestream sidecar (pid=$LS_PID) died after boot exit — fail-open"
-    unset LS_PID
-  fi
   [ -f "$APP_DIR/app/main.py" ] || { echo "[start] main.py still missing, rebootstrap..."; bootstrap_from_bucket || true; }
-  if [ -z "${LS_PID:-}" ] && [ -f "$APP_DIR/scripts/litestream.yml" ]; then
-    nohup litestream replicate -config "$APP_DIR/scripts/litestream.yml" >"$LOG_DIR/litestream.log" 2>&1 &
-    LS_PID=$!
-    echo "[start] litestream replicate respawned pid=$LS_PID"
-  fi
   sleep 5
 done

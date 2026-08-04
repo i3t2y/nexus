@@ -98,6 +98,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── litestream v0.5.15(root 段,监 state.db WAL→R2 不改源)─────────────
+# ★2026-08-05 A 方案后 litestream 全段弃(state.db 移 /opt/data 本地盘,无旁路进程干扰 WAL;
+#   start.sh 已删 restore/replicate 全段 + 删 scripts/litestream.yml 孤儿)。此 RUN 留作
+#   base 历史,下次 rebuild base 顺手删(当前不要求 rebuild;litestream 二进制在镜像内未引不跑,无害)。
 # 资产名:litestream-0.5.15-linux-x86_64.tar.gz(无 v 前缀 + x86_64;勿用 vfs-amd64 那是 .so 扩展)
 # 解出 litestream CLI 二进制放 /usr/local/bin
 RUN curl -fsSL https://github.com/benbjohnson/litestream/releases/download/v0.5.15/litestream-0.5.15-linux-x86_64.tar.gz \

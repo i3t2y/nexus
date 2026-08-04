@@ -22,7 +22,7 @@
 #     须在此显式列各平台,plugin tool 注册(code import)≠ toolset 启用平台注入。
 #   - plugins.enabled 列两 plugin license(代码 import 许可);dashboard tab 发现靠 manifest.json 不靠此项。
 #   - disabled_toolsets 全局砍无头跑不起的 browser/image_gen/voice/tts。
-#   - database.journal_mode: wal(K-R6:配合 base libsqlite3 ≥3.51.3 防 fresh DB 强 DELETE 致 litestream 静默 off)。
+#   - database.journal_mode: wal(K-R6:配合 base libsqlite3 ≥3.51.3 防 fresh DB 强 DELETE 致 WAL 静默 off;litestream 弃后 2026-08-05 仍留 WAL=A 方案 state.db 在 /opt/data 本地盘 WAL 正常稳定无旁路进程干扰)。
 
 plugins:
   enabled:
@@ -132,7 +132,7 @@ disabled_toolsets:
   - tts
 
 database:
-  journal_mode: wal   # K-R6 litestream 需 WAL 跟踪
+  journal_mode: wal   # K-R6:防 fresh DB 强 DELETE 致 WAL 静默 off(配合 base libsqlite3 ≥3.51.3);A 方案后 state.db 在 /opt/data 本地盘,WAL 正常无旁路进程干扰
 
 # ── kanban dispatcher 关闭(永续砍 extras:nexus 无 kanban board)──
 # 默认 dispatch_in_gateway=true → 每 tick 无条件 connect board=default 库

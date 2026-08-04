@@ -138,7 +138,31 @@ def _write_health(space: str, status: str, detail: str) -> None:
         print(f"[keepalive] supabase insert failed (可能项目已暂停): {e}", flush=True)
 
 
+def _fs_type_diag() -> None:
+    """一次性 fs 类型诊断(★2026-08-05 治 malformed 零臆断验证)。
+
+    验 HERMES_HOME 所在盘真本地盘(ext4/overlay)非 FUSE(若挂 bucket mount)。
+    根因实证:state.db 在 FUSE + 旁路进程(litestream)并发读 WAL → SQLite malformed。
+    方案 A 改 HERMES_HOME=/opt/data/.hermes 移出 bucket,此诊断坐实 /opt/data 真本地盘。
+    留作持续 fs-type 监控(每轮 keepalive 不重跑;仅 boot 期一次,无害;若未来 HF 改盘类型,
+    此行留痕日志便于回溯)。subprocess 调 df -T(keepalive nohup 后台,sim'll stdout 进日志)。
+    """
+    import subprocess
+    print("[keepalive] fs-type diag (verify HERMES_HOME on local disk not FUSE):", flush=True)
+    for path in ("/opt/data", "/data"):
+        try:
+            out = subprocess.run(
+                ["df", "-T", path], capture_output=True, text=True, timeout=5,
+            )
+            for line in (out.stdout or "").splitlines():
+                if line.strip():
+                    print(f"  {line}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [df -T {path} failed: {e}]", flush=True)
+
+
 def main() -> None:
+    _fs_type_diag()
     print("[keepalive] start", flush=True)
     while True:
         wrote_supabase = False
