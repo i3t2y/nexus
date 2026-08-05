@@ -114,6 +114,12 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
 
 # ── UID 1000 与 HF 一致(HF 容器以 user ID 1000 跑)──────────────────
 RUN useradd -m -u 1000 user
+# ── /opt/data:state.db 本地盘落地(A 方案治 malformed,2026-08-05)──────
+# start.sh 以 user(UID 1000)跑,/opt 默认 root 拥有 user 无写权 → mkdir /opt/data failed。
+# 两实战项目(HermesFace/HuggingMes)稳跑 /opt/data 本地 SQLite→0 malformed,靠此预建+chown。
+# A 方案 = HERMES_HOME 移出 /data bucket FUSE 进 /opt/data 本地盘消 litestream 旁路并发雷根因。
+# 预建 + chown user → start.sh `mkdir -p /opt/data` 不报 failed + subprocess HOME=${HERMES_HOME}/home 可写。
+RUN mkdir -p /opt/data && chown user:user /opt/data
 
 # ── base Python 依赖(四 Space 超集,一并装进系统 site-packages)──────
 # requirements-base.txt 含四 Space 共用 + langgraph 那套 + huggingface_hub
@@ -226,7 +232,12 @@ ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     # hermes-agent state.db 唯一重定向开关(逻辑层 start.sh 可覆盖,固化默认)
-    HERMES_HOME=/data/.hermes \
+    # A 方案(2026-08-05):指 /opt/data 本地盘非 /data bucket FUSE,治 malformed 根因。
+    # start.sh L92 `${HERMES_HOME:-/opt/data/.hermes}` 走 ${:-} 表达式仅在 VAR 空/未设时用 default,
+    # 此 ENV 设非空 → start.sh 用此值而非 default。故 ENV 必须指 /opt/data/.hermes,
+    # 否则 start.sh default 永不生效(VAR 恒非空)。HF Secrets 若设 HERMES_HOME 覆盖此 ENV,
+    # 用户须删 Secrets 让此 ENV 兜底(见 memory nexus-hermes-statedb-malformed-fix)。
+    HERMES_HOME=/opt/data/.hermes \
     # 内核源码路径(逻辑层 import run_agent 用,只读,无需 user 写)
     HERMES_AGENT_DIR=/opt/hermes-agent \
     # K-R4:指向 bake 期 prebuild 的 dashboard SPA dist(web_server.py:135 读此 env)
