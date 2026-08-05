@@ -147,9 +147,22 @@ kanban:
 
 # telegram/discord config(平台 adapter 由此起,凭证走 env 非 yaml):
 #   TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN env 注。
-#   HF DNS 封 IM 域(K-R7):telegram 靠 hermes 原生 telegram_network.py DoH+fallback IP 自解;
-#   discord 硬编无 base_url 开关,仅 DISCORD_PROXY env 兜底。
+# ★ telegram extra.base_url(2026-08-05 加,K-R7 推翻):hermes 原生 telegram_network.py
+#   DoH+fallback IP 在 HF **IP 段也封**(不只 DNS)→ fallback IP 149.154.166.110 直连仍
+#   ConnectTimeout,DoH 主路死。改 CF Worker 反代绕 HF 出站封禁段。
+#   adapter.py:3714 custom_base_url=self.config.extra.get("base_url") → PTB builder.base_url()
+#   指 CF Worker:bot polling 流量经 Worker→api.telegram.org,不经 HF 封禁 IP。
+#   extra.base_url 必带末尾 /bot(PTB 拼 /bot<TOKEN>/<method> 的 /bot 已含,Worker 路径
+#   匹配 /bot 开头转发);base_file_url 同理 /file/bot。
+#   Worker 鉴权=ALLOWED_TOKENS 白名单(CF Worker env,非 HF Secrets)限仅本 bot token 经此代理,
+#   非 open proxy 避 CF AUP §2.2.1(j) proxy 雷区(tele.nexush.workers.dev)。
+#   双保险:HF Secrets HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true 禁 hermes 原生 fallback IP
+#   (adapter.py:3807),因 IP 封下 fallback 也超时,禁了消 boot 重连死循环。
+#   discord 硬编无 base_url 开关,仅 DISCORD_PROXY env 兜底(HF IP 封同理,暂不解)。
 telegram:
   enabled: true
+  extra:
+    base_url: https://tele.nexush.workers.dev/bot
+    base_file_url: https://tele.nexush.workers.dev/file/bot
 discord:
   enabled: true
