@@ -134,10 +134,37 @@ fi
 echo "[start] replay packages..."
 python "$APP_DIR/scripts/replay_packages.py" replay || echo "[start] replay skipped (no log yet)"
 
+# ── state.db 会话历史持久层(★2026-08-06 A 方案补全,Bucket 路非 Dataset) ──
+# A 方案把 HERMES_HOME 移 /opt/data 本地盘治 malformed,但代价=重启清盘丢 dashboard 会话历史。
+# 2026-08-06 anysearch 查证:HF Storage Bucket 2026-03-10 发布/03-31 Spaces Volume 挂载 GA,
+#   早于两参考项目(HermesFace 2026-04-13/HuggingMes 2026-05-03 创建),故两项目用 Dataset 非历史限制,
+#   是惰性选熟悉 git endpoint。我们已有 Bucket 挂载,优先于二手参考。
+# 双盘分离治本:state.db 真值源在线写 /opt/data 本地盘(WAL 稳,无 FUSE 旁路雷),Bucket 纯当离线快照仓库:
+#   state_db_uploader.py 周期(默认 300s)hf buckets cp 推到 bucket/state-backups/state.db
+#   (覆写无 git history 累积,优于 Dataset 300s 周期天 288 commit 膨胀需 squash);restore_state.py 首启从该 path 拉回。
+#   两盘分开=旧 malformed 雷根因(bucket FUSE+litestream 并发改 WAL)消除。
+# 与 persist_to_r2.py(Supabase→R2 四结构化表)正交:本层只管 state.db 整库快照(会话历史索引),
+#   不重复 R2 那套(核心四表 agent_states/task_logs/long_memory/skills_index 已在 R2+Supabase)。
+# 拉回须在 hermes boot 前(boot 期 hermes 起 state.db 写锁,先拉避免抢锁);uploader nohup 后台并行。
+# 凭证:HF_TOKEN + HF_OWNER + NEXUS_LOGIC_BUCKET(三 env 与 bootstrap_from_bucket/sync-logic-bucket 同源;
+#   HF Space Secrets 补齐 HF_OWNER/NEXUS_LOGIC_BUCKET,不补则脚本自降级 no-op 不阻断 boot,会话历史重启后丢但 hermes 照起)。
+if [ -f "$APP_DIR/scripts/restore_state.py" ]; then
+  python "$APP_DIR/scripts/restore_state.py" 2>&1 | sed 's/^/[start] /'
+fi
+
 # 后台：Supabase→R2 双写快照（如配置了凭证才起）
 if [ -n "${SUPABASE_URL:-}" ]; then
   echo "[start] persist daemon up"
   nohup python "$APP_DIR/scripts/persist_to_r2.py" >"$LOG_DIR/persist.log" 2>&1 &
+fi
+
+# 后台：state.db → HF Bucket 快照(会话历史持久,防重启丢)
+# 缺 HF_TOKEN/HF_OWNER/NEXUS_LOGIC_BUCKET 任一则跳(脚本内亦自降级 no-op,不阻断 boot)。
+if [ -n "${HF_TOKEN:-}" ] && [ -n "${HF_OWNER:-}" ] && [ -n "${NEXUS_LOGIC_BUCKET:-}" ]; then
+  echo "[start] state-db upload daemon up (→ bucket ${HF_OWNER}/${NEXUS_LOGIC_BUCKET}/state-backups)"
+  nohup python "$APP_DIR/scripts/state_db_uploader.py" >"${LOG_DIR:-/opt/data/logs}/state-upload.log" 2>&1 &
+else
+  echo "[start] state-db upload daemon skip (need HF_TOKEN+HF_OWNER+NEXUS_LOGIC_BUCKET)"
 fi
 
 # 后台：下游 Space 保活探测
