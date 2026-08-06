@@ -20,9 +20,13 @@ psycopg[binary]>=3.2.0,<4.0.0
 psycopg-pool>=3.2.0,<4.0.0
 langchain-core==0.3.40
 
-# === Bucket bootstrap fallback(hermes start.sh 挂载兜底拉逻辑用) ===
-# 用 1.x 稳定保守线;hf_hub_download/snapshot_download API 长期稳定
-huggingface_hub==1.0.1
+# === Bucket bootstrap fallback(hermes start.sh 挂载兜底拉逻辑用) + state.db 持久层双脚本 ===
+# 升 1.0.1 → 1.26.0:1.0.1 早期 hf CLI 无 `buckets` 子命令(no such command 'buckets'),
+# state_db_uploader.py/restore_state.py 调 `hf buckets cp` CLI 子进程在 1.0.1 容器内必死。
+# github/.../1.26.0 实测 `hf buckets cp` 往返验通(buckets 子命令 rc=0 + cmp 字节一致)。
+# 本地环境 huggingface_hub 1.26.0 全往返验通,exact pin 此版防后期 minor/patch 漂移打破 buckets 路径。
+# 若需锁最新补丁可用 ==1.26.1(未往返验 buckets 风险虽极小)。
+huggingface_hub==1.26.0
 
 # === hermes-agent 核心传递依赖(NousResearch Hermes Agent,editable --no-deps 装)===
 # hermes-agent pyproject 全 exact-pin;editable install 用 --no-deps 防覆盖上面各 Space pin,
