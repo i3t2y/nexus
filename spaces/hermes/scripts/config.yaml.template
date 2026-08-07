@@ -159,10 +159,57 @@ kanban:
 #   双保险:HF Secrets HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true 禁 hermes 原生 fallback IP
 #   (adapter.py:3807),因 IP 封下 fallback 也超时,禁了消 boot 重连死循环。
 #   discord 硬编无 base_url 开关,仅 DISCORD_PROXY env 兜底(HF IP 封同理,暂不解)。
+# ★ telegram extra.base_url(2026-08-06 绑自定义域 K-R7 闭环):
+#   *.workers.dev 的 SNI 在 HF 出口审查设备关键字黑名单 → TLS 握手被 RST(SSL UNEXPECTED_EOF)。
+#   hermes 实测同 CF IP + SNI=cloudflare-dns.com 通 / SNI=*.workers.dev 死 / SNI=api.telegram.org 死
+#   → 独立 IP/路由层,纯属 SNI 关键字过滤(HuggingMes 绑自定义域成 = 它 worker 域 SNI 不黑名单)。
+#   解 = Worker 绑自定义域 tele.nexush.cc.cd(SNI 不在 黑名单 → 握手通)+ PTB custom_base_url 指绑域。
+#   adapter.py:3714 custom_base_url=self.config.extra.get("base_url") → PTB builder.base_url()。
+#   extra.base_url 必带末尾 /bot(PTB 拼 /bot<TOKEN>/<method> 的 /bot 已含,Worker 路径
+#   匹配 /bot 开头转发);base_file_url 同理 /file/bot(Worker 正则兼容 /file/bot<TOKEN>/)。
+#   ★ Worker 侧正则须改 /^\/(?:file\/)?bot([0-9]+:[A-Za-z0-9_-]+)\// 兼容 file 路径(否则 403)。
+#   ★ 生效 config.yaml 已 hermes config set 同步(2026-08-06);本 template 同步防 start.sh cmp 重启回退。
+#   Worker 鉴权=ALLOWED_TOKENS 白名单(CF Worker env)限仅本 bot token 经此代理,
+#   非 open proxy 避 CF AUP §2.2.1(j) proxy 雷区。
+#   双保险:HF Secrets HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true 禁 hermes 原生 fallback IP
+#   (adapter.py:3807),因 SNI 封下 fallback 也超时,禁了消 boot 重连死循环。
+#   discord 硬编无 base_url 开关,仅 DISCORD_PROXY env 兜底(HF SNI 封同理,暂不解)。
 telegram:
   enabled: true
   extra:
-    base_url: https://tele.nexush.workers.dev/bot
-    base_file_url: https://tele.nexush.workers.dev/file/bot
+    base_url: https://tele.nexush.cc.cd/bot
+    base_file_url: https://tele.nexush.cc.cd/file/bot
 discord:
   enabled: true
+
+# ── auxiliary 副任务用主 provider(omn)+ 宽 timeout 容冷启动 ──
+# 2026-08-07 修:title_generation 默认 fallback chain(openrouter→nous→custom→api-key)无
+#   omn 主 provider 明示 → openrouter/nous 无凭据死 + omn 走 step1 但 30s 默认 timeout 容不下
+#   omn(下游 nonoke/omn HF Space 免费 cpu 冷启)首请 → "Title generation failed: Request timed out"。
+#   §[start] state-db upload daemon up 同境 boot 阶 omn 首请慢。
+# 解:auxiliary 段显式指 provider=main(auxiliary_client.py:174 _normalize_aux_provider "main"
+#   resolve to user's actual main provider 含 named custom:omn)→ skip step2 fallback chain 直走 omn。
+#   auxiliary.<task>.timeout(_get_task_timeout auxiliary_client.py:4360 黔 30.0s不容)→抬 90s 容冷启。
+#   影响任务:title_generation(dashboard 会话列表标题)/ compression(长对话压)/ summarize/
+#   vision/web_extract/memory_flush 同理 omn 慢 → 全配 main + 90s。
+# 不影响主聊天(主链 timeout 容忍更长,已实测聊天通)。此段只活 dashboard 副展示 + 长对话压缩体验。
+# 凭证:复用主 omn OPENAI_API_KEY(Secrets 已补);无新 env。
+auxiliary:
+  title_generation:
+    provider: main
+    timeout: 90
+  compression:
+    provider: main
+    timeout: 90
+  summarize:
+    provider: main
+    timeout: 120
+  vision:
+    provider: main
+    timeout: 90
+  web_extract:
+    provider: main
+    timeout: 90
+  memory_flush:
+    provider: main
+    timeout: 90
