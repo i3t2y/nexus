@@ -161,8 +161,80 @@ def _fs_type_diag() -> None:
             print(f"  [df -T {path} failed: {e}]", flush=True)
 
 
+def _egress_diag() -> None:
+    """一次性出站诊断(★2026-08-06 K-R7 CF Worker 路定层)。
+
+    hermes telegram base_url 已指 CF Worker `tele.nexush.workers.dev`,Secret
+    HERMES_TELEGRAM_DISABLE_FALLBACK_IPS 已生效(else 分支纯 HTTPXRequest),但 boot
+    仍 8 次全 timeout。本地测 worker 活(403 1.2s)。定 HF 容器连 worker 哪层死。
+
+    纯 Python 测三层(不依赖 curl/HF PATH):
+      DNS   socket.getaddrinfo —— 解析层
+      TCP   socket.create_connection —— 连接层
+      TLS+HTTP  httpx.get —— TLS+应用层
+    对照三 host(均 port 443):
+      tele.nexush.workers.dev  主测(CF Worker 反代 telegram)
+      api.telegram.org         对照(已知 HF IP 封死)
+      nonoke-omn.hf.space       对照(HF 内网该活)
+    每行标 [PASS/FAIL] + 耗时 + 错误类型,stdout 进 keepalive.log。
+    """
+    import socket
+    import time as _t
+
+    targets = {
+        "worker": "tele.nexush.workers.dev",
+        "telegram": "api.telegram.org",
+        "omn": "nonoke-omn.hf.space",
+    }
+    print("[keepalive] egress diag (HF container → 3 hosts, port 443):", flush=True)
+    for label, host in targets.items():
+        # DNS
+        t0 = _t.time()
+        try:
+            infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+            ips = sorted({i[4][0] for i in infos})
+            dns = f"[PASS] ips={','.join(ips[:3])} t={(_t.time()-t0)*1000:.0f}ms"
+        except socket.gaierror as e:
+            dns = f"[FAIL] gaierror={e} t={(_t.time()-t0)*1000:.0f}ms"
+        except Exception as e:  # noqa: BLE001
+            dns = f"[FAIL] {type(e).__name__}={e} t={(_t.time()-t0)*1000:.0f}ms"
+        print(f"  {label} DNS    {dns}", flush=True)
+
+        # TCP
+        t0 = _t.time()
+        try:
+            infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+            ip = infos[0][4][0]
+            with socket.create_connection((ip, 443), timeout=10) as s:
+                s.settimeout(5)
+                tcp = f"[PASS] {ip}:443 t={(_t.time()-t0)*1000:.0f}ms"
+        except socket.timeout:
+            tcp = f"[FAIL] timeout t={(_t.time()-t0)*1000:.0f}ms"
+        except OSError as e:
+            tcp = f"[FAIL] {type(e).__name__}={e} t={(_t.time()-t0)*1000:.0f}ms"
+        except Exception as e:  # noqa: BLE001
+            tcp = f"[FAIL] {type(e).__name__}={e} t={(_t.time()-t0)*1000:.0f}ms"
+        print(f"  {label} TCP    {tcp}", flush=True)
+
+        # TLS+HTTP
+        t0 = _t.time()
+        try:
+            r = httpx.get(f"https://{host}/", timeout=15, follow_redirects=False)
+            tls = f"[PASS] HTTP={r.status_code} t={(_t.time()-t0)*1000:.0f}ms"
+        except httpx.ConnectTimeout:
+            tls = f"[FAIL] ConnectTimeout t={(_t.time()-t0)*1000:.0f}ms"
+        except httpx.ConnectError as e:
+            tls = f"[FAIL] ConnectError={e} t={(_t.time()-t0)*1000:.0f}ms"
+        except httpx.ReadTimeout:
+            tls = f"[FAIL] ReadTimeout t={(_t.time()-t0)*1000:.0f}ms"
+        except Exception as e:  # noqa: BLE001
+            tls = f"[FAIL] {type(e).__name__}={e} t={(_t.time()-t0)*1000:.0f}ms"
+        print(f"  {label} TLS+HTTP {tls}", flush=True)
+
+
 def main() -> None:
     _fs_type_diag()
+    _egress_diag()
     print("[keepalive] start", flush=True)
     while True:
         wrote_supabase = False
