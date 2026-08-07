@@ -113,16 +113,41 @@ done
 # 清 pycache(避免旧版名 nexus 残留字节码)
 find "$HERMES_HOME/plugins" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
+# ── hermes home 关键文件持久层(★2026-08-07 全面持久补全,Bucket 路) ──
+# A 方案把 HERMES_HOME 移 /opt/data 本地盘治 state.db malformed,代价=重启清盘丢:
+#   - .env(dashboard "Credentials" 写的 channel token,hermes 写此非 HF Secrets)
+#   - SOUL.md(个体人设 prompt_builder.py:1326 装入 system prompt)
+#   - memories/MEMORY.md + memories/USER.md(个体记忆)
+#   - config.yaml(dashboard 设置项;★上面 cp 改"缺才 cp"防 start.sh 覆,但 /opt/data 仍清盘)
+# restore_home_files.py boot 期(hermes 起前)从 Bucket home-backups/ 拉回 → 落 HERMES_HOME。
+# ★须在 config cp 模板前:拉回 config.yaml 后 cp "缺才不覆" 逻辑才优先用拉回的,
+#   非首种 template(否则拉回的 config 被 template 覆丢 dashboard 设置)。
+# home_files_uploader.py nohup 后台周期(默认 600s,文件改不频繁)推回 Bucket(增量 mtime+size 跳)。
+# 凭证同 state 双脚本:HF_TOKEN + HF_OWNER + NEXUS_LOGIC_BUCKET 三 env 缺则脚本内自降级 no-op 不阻断 boot。
+if [ -f "$APP_DIR/scripts/restore_home_files.py" ]; then
+  python "$APP_DIR/scripts/restore_home_files.py" 2>&1 | sed 's/^/[start] /'
+fi
+
 # config.yaml 从模板生成(K 形态:platform_toolsets 三行 + plugins.enabled 两 plugin
-#   + disabled_toolsets + database.wournal_mode:wal)。
-# 永远覆盖:config 是 nexus 逻辑层管项(model.provider/platform_toolsets/plugins 单源),
-#   非用户可改 — sync-logic-bucket 推 Bucket 后 start 强制对齐,防旧 config 锁死 provider。
+#   + disabled_toolsets + database.journal_mode:wal)。
+# ★2026-08-07 改"缺才 cp"(治"dashboard 设置无法保存"):
+#   旧逻辑=start.sh 每启动 cp template→config.yaml 覆盖 dashboard 在 UI 改的 yaml 级设置
+#   (model 参数/auxiliary timeout/plugins toggle 等)。dashboard PUT /api/config(web_server.py:1190)
+#   → save_config()(config.py:4499)→ $HERMES_HOME/config.yaml;但 restart 触 start.sh 覆回
+#   template → 用户改的丢。改成:本地无 config.yaml 才 cp template 首种;已有则保留(保 dashboard 改动)。
+# template 升级配套(template 改 config 项不再自动 sync 旧 config):置 FORCE_TEMPLATE_APPLY=1
+#   强制 cp(template 升级时用户在 HF Secrets 临时加此 env 触发一次强制覆盖,升级后删)。
+# ★注意:config.yaml 本地盘 /opt/data 重启清盘仍丢(A 方案代价),故 restore_home_files.py
+#   boot 期从 Bucket home-backups/ 拉回(见下);本 cp 仅"本地无 + 无 Bucket 拉回"首种 case 兜底。
 if [ -f "$APP_DIR/scripts/config.yaml.template" ]; then
-  if [ ! -f "$HERMES_HOME/config.yaml" ] || ! cmp -s "$APP_DIR/scripts/config.yaml.template" "$HERMES_HOME/config.yaml"; then
+  if [ -n "${FORCE_TEMPLATE_APPLY:-}" ]; then
     cp "$APP_DIR/scripts/config.yaml.template" "$HERMES_HOME/config.yaml"
-    echo "[start] config.yaml updated from template (provider + platform_toolsets + plugins)"
+    echo "[start] config.yaml FORCE overwritten from template (FORCE_TEMPLATE_APPLY set for upgrade)"
+  elif [ ! -f "$HERMES_HOME/config.yaml" ]; then
+    cp "$APP_DIR/scripts/config.yaml.template" "$HERMES_HOME/config.yaml"
+    echo "[start] config.yaml seeded from template (first boot, no existing config)"
   else
-    echo "[start] config.yaml already in sync with template"
+    echo "[start] config.yaml retained (dashboard edits preserved; FORCE_TEMPLATE_APPLY=1 force overwrite)"
   fi
 else
   echo "[start] WARN: config.yaml.template missing, $HERMES_HOME/config.yaml not seeded"
@@ -165,6 +190,16 @@ if [ -n "${HF_TOKEN:-}" ] && [ -n "${HF_OWNER:-}" ] && [ -n "${NEXUS_LOGIC_BUCKE
   nohup python "$APP_DIR/scripts/state_db_uploader.py" >"${LOG_DIR:-/opt/data/logs}/state-upload.log" 2>&1 &
 else
   echo "[start] state-db upload daemon skip (need HF_TOKEN+HF_OWNER+NEXUS_LOGIC_BUCKET)"
+fi
+
+# 后台：hermes home 关键文件 → HF Bucket 快照(.env/SOUL.md/memories/config.yaml,防重启丢)
+# 与 state_db_uploader 同 env 门控;interval 默认 600s(文件改不频繁,比 state.db 300s 低频)。
+# 增量:逐文件 mtime+size 未变跳,省 HF rate limit。
+if [ -n "${HF_TOKEN:-}" ] && [ -n "${HF_OWNER:-}" ] && [ -n "${NEXUS_LOGIC_BUCKET:-}" ]; then
+  echo "[start] home-files upload daemon up (→ bucket ${HF_OWNER}/${NEXUS_LOGIC_BUCKET}/home-backups)"
+  nohup python "$APP_DIR/scripts/home_files_uploader.py" >"${LOG_DIR:-/opt/data/logs}/home-upload.log" 2>&1 &
+else
+  echo "[start] home-files upload daemon skip (need HF_TOKEN+HF_OWNER+NEXUS_LOGIC_BUCKET)"
 fi
 
 # 后台：下游 Space 保活探测
