@@ -92,7 +92,7 @@ nexus/
 
 | Space | URL repo 名 | SDK | 端口 | 角色 |
 |-------|-----------|-----|------|------|
-| hermes | `hermes` | docker | 7860 | 主控大脑。**⚠️ 换装后实态** = 全原生 NousResearch Hermes Agent 三组件(gateway api_server `/v1/runs` + dashboard SPA + 两 plugin tab),非自建 Gradio+FastAPI(旧)。详见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)。**永续改造**不变:逻辑层进 HF Storage Bucket /data,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑 |
+| hermes | `hermes` | docker | 7860 | 主控大脑。**⚠️ 换装后实态** = 全原生 NousResearch Hermes Agent 三组件(gateway api_server `/v1/runs` + dashboard SPA + 两 plugin tab),非自建 Gradio+FastAPI(旧)。详见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)。**永续改造**不变:逻辑层进 HF Storage Bucket /data,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑。**永续架构动机来龙去脉(为什么这么折腾)+ 部署链骨架 + 待办**全维度案卷 → [docs/hermes/hermes-部署与永续架构动机.md](./hermes/hermes-部署与永续架构动机.md) |
 | langgraph | `langgraph` | docker | 7860 | 复杂工作流编排，AsyncPostgresSaver Checkpoint + R2 blob |
 | claude-code | `claude-code` | docker | 7860 | 强推理，对接 Anthropic Messages API |
 | codex | `codex` | docker | 7860 | 快速编码，对接 OpenAI 兼容 /chat/completions |

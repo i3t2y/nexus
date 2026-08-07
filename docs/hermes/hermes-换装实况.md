@@ -5,7 +5,8 @@
 >
 > **谁该读**: 任何 AI / 人接手 Nexus hermes,读完此一份即握 hermes 现役真态,不须倒读中间态文档。
 >
-> **关联文档链**: 系统总入口 `docs/HANDBOOK.md`(零上下文自包含总集)→ 本文(hermes 深度)→ `docs/new/部署/hermes-v9-hf-deploy-checklist.md`(部署清单,部分清单已旧见 §6 标注)。
+> **关联文档链**: 系统总入口 `docs/HANDBOOK.md`(零上下文自包含总集)→ 本文(hermes 源码深度)→ `docs/new/部署/hermes-v9-hf-deploy-checklist.md`(部署清单,部分清单已旧见 §6 标注)。
+> **永续架构动机 + 部署链骨架**:`docs/hermes/hermes-部署与永续架构动机.md`(WHY 永续来龙去脉 + 架构四层 + 现役部署实况 + K-R 闸门 + 待办总表;本文互补 = 本文放源码 file:line 深证,案卷放 why + 部署链骨架)。
 >
 > **旧结论已推翻**(勿再信):
 > - `docs/HANDBOOK.md` §1 "Hermes Agent 认知修正"(自建 Gradio+FastAPI)→ **推翻**,见本文 §1。
@@ -81,9 +82,9 @@
 
 1. **逻辑层进 HF Storage Bucket `/data` rw 挂载** —— 改逻辑只推 Bucket + Restart,不触 HF rebuild 付费墙。
 2. **Dockerfile 永续墓碑** —— `ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable` + 仅 `COPY start.sh`(逻辑层在镜像外);首切后永不动。
-3. **依赖进 GHCR base 镜像** —— hermes-agent + 蔓延依赖 + litestream + 自编 libsqlite3 3.53.4(K-R6:≥3.51.3 防 fresh DB 强 DELETE 致 litestream 静默 off)+ web_dist 预建(K-R4)+ **ui-tui/dist/entry.js 预建**(K-R8:消 dashboard embedded-chat runtime `npm install` 死循环 → "Chat unavailable: 1";ENV `HERMES_TUI_DIR=/opt/hermes-agent/ui-tui`)+ messaging 子集(aiohttp/telegram/discord/brotlicffi)全在 base,逻辑层零 `pip install`。
+3. **依赖进 GHCR base 镜像** —— hermes-agent + 蔓延依赖 + ~~litestream~~(已弃见 §10.1)+ 自编 libsqlite3 3.53.4(K-R6:≥3.51.3 防 fresh DB 强 DELETE 致 WAL 静默 off)+ web_dist 预建(K-R4)+ **ui-tui/dist/entry.js 预建**(K-R8:消 dashboard embedded-chat runtime `npm install` 死循环 → "Chat unavailable: 1";ENV `HERMES_TUI_DIR=/opt/hermes-agent/ui-tui`)+ messaging 子集(aiohttp/telegram/discord/brotlicffi)全在 base,逻辑层零 `pip install`。
 
-- state.db 经 litestream WAL→R2 复制(铁律 L8)续命;Supabase 四表经 `persist_to_r2.py` 快照(灾备,与 litestream 互补)。
+- ~~state.db 经 litestream WAL→R2 复制(铁律 L8)续命;Supabase 四表经 `persist_to_r2.py` 快照(灾备,与 litestream 互补)。~~ → **已弃(2026-08-05 治本,见 §10.1)**:litestream 旁路进程并发读 WAL = state.db malformed 根因,全段删;state.db 移 `/opt/data` 本地盘 + 会话历史持久靠 §10.2 双脚本周期推 Bucket。Supabase+R2 四表灾备 `persist_to_r2.py` 保留。
 
 ---
 
@@ -248,7 +249,7 @@ model:
 | **K-R1** omn 协议 + 401 | ✅ 落闸 | omn(nonoke-omn)`/v1/chat/completions` + `/v1/messages` + `/v1/embeddings` 全 401 非 404;hermes custom provider 源码 `runtime_provider.py:462` 默认 `api_mode=chat_completions` → OpenAI SDK;base_url 带 `/v1` 关键(缺 404) |
 | **K-R5** dashboard auth gate | ✅ 路径定 | hermes 原生 `BasicAuthProvider`(env USERNAME/PASSWORD/SECRET);缺则 fail-closed。非 OAuth |
 | **K-R6** litestream WAL | ✅ | base 自编 libsqlite3 3.53.4(≥3.51.3)防 fresh DB 强 DELETE 致 litestream 静默 off;`database.journal_mode: wal` |
-| **K-R7** HF DNS 封 IM 域 | ✅ | telegram 靠 hermes 原生 `telegram_network.py:22` DoH + fallback IP 零改源主路;discord 仅 `DISCORD_PROXY` 兜底 |
+| **K-R7** HF DNS 封 IM 域 | ✅ 代码侧(待 CF 部署) | ~~`telegram_network.py:22` DoH + fallback IP 零改源主路~~→ **§10.3 推翻**:HF IP 段也封,DoH+fallback IP 死;改 CF Worker 反代 `tele.nexush.cc.cd` 自定义域(SNI 黑名单规避)+ ALLOWED_TOKENS;pending CF Dashboard 部署。discord 仅 `DISCORD_PROXY` 兜底 |
 | **K-R8** ui-tui bundle | ✅ 代码侧 | base 镜像 prebuild `ui-tui/dist/entry.js`(3.66MB)+ ENV `HERMES_TUI_DIR`(commit `5e15160`);本地验 build exit0 + 2.97GB <10GB。**待用户重 build :stable 推 GHCR + HF rebuild 拉** |
 | **omn provider + picker 屏蔽** | ✅ 代码侧 | commit `3da0495`:provider custom→omn + picker 三层屏蔽 + Bucket 单文件直传(hf buckets cp)回拉校验一致 |
 
@@ -280,3 +281,80 @@ model:
 - [[nexus-hermes-model-config-official-docs-2026-08-03]] — 官方 docs 实证:model.default / custom_providers 命名 / glm-5.2 死锁根因。
 - [[nexus-hermes-r1-omniroute-protocol-audit-2026-08-03]] — R1 omn 协议 + base_url /v1 + 401 修。
 - [[nexus-redline-hf-space-push]] — git push 红线 + Bucket 推非 Space push。
+
+---
+
+## 10. 现态增量(2026-08-06,本节覆 §3/§6/§7 中旧结论)
+
+> 本节是 2026-08-06 后增补,任何冲突以本节为准。提取自 memory 8-5/8-6 笔记 + git/Bucket 实时核。
+> **hermes 自查优先用本节**:以下痛点 hermes 可自查(查 `HERMES_HOME`/`/opt/data`/config/Secrets/Bucket)。
+
+### 10.1 state.db malformed 已治本(推翻 §3 "litestream 续命")
+
+- **根因实证**(2026-08-05):`/data` 实为 HF Bucket mount(FUSE/Xet) + litestream 旁路进程并发读 state.db WAL → SQLite corruption(官方雷:Tropy/OneDrive 同步夹层 SQLite 不许他进程并发改文件)。hermes 原生畸形自愈 `_try_runtime_fts_rebuild` 跑过但 retry 仍 malformed = 库整体损。
+- **治本方案 A** commit `ff5c3ae` + `2d411aa`:① `HERMES_HOME` 移出 bucket FUSE → `/opt/data/.hermes`(本地盘 ext4/overlay 无 FUSE 无旁路进程,WAL 稳);② base Dockerfile L229 `ENV HERMES_HOME=/opt/data/.hermes` 固化(覆盖 start.sh `${VAR:-default}`);③ base L116 预 `chown /opt/data`;④ **litestream 全段弃**(state.db 在本地盘,无需 WAL 复制续命)。
+- **HF 实证**(2026-08-05 07:23 reboot log):无 mkdir fail + `/opt/data/.hermes` 在 + 无 Bus error + 无 OOM = **真治本**。
+- **代价**:重启丢 dashboard 会话历史(transient state.db ephemeral 因本地盘重启清)。**核心四表 agent_states/task_logs/long_memory/skills_index 在 Supabase+R2 双写(`persist_to_r2.py`)不丢,AI 长期记忆不丢**。state.db 仅管 dashboard 会话历史索引,非 AI 记忆源。
+- ⚠️**推翻 §3 铁律 L8**:"state.db 经 litestream WAL→R2 复制续命" → **已弃**(治本后 litestream 删)。
+
+### 10.2 会话历史持久层补全(A 方案,2026-08-06)—— 治"重启丢会话历史"代价
+
+补 10.1 代价(state.db ephemeral 重启丢)。原抄 两参考项目 HermesFace+HuggingMes 用 HF Dataset repo 周期上传,**anysearch 查证后改 Bucket 路**(推翻初版 Dataset 方案):
+
+- **anysearch 时间线实证**:HF Storage Bucket GA 2026-03-10(blog)/03-31(Spaces Volume 挂载 changelog),**早于两参考项目创建**(HermesFace 2026-04-13 / HuggingMes 2026-05-03)→ 两项目用 Dataset 非历史限制,是惰性选熟悉 git endpoint。我们已有 Bucket 挂载,直接用。
+- **双盘分离治本核心**:state.db 真值源在线写 `/opt/data/.hermes` 本地盘(WAL 稳无 FUSE 旁路雷),Bucket 纯当离线快照仓库(周期推 / boot 前 cp 拉),两盘分开无并发改 → 旧 malformed 雷根因消除。
+
+**两脚本(Bucket 路,hf buckets cp CLI 子进程,huggingface_hub 1.0.1 无 bucket Python API 故 CLI)**:
+
+- `scripts/state_db_uploader.py`(周期默认 300s):`PRAGMA wal_checkpoint(TRUNCATE)` 落 WAL + `sqlite3 backup API` 读一致快照 → tmp → `hf buckets cp` 推 `hf://buckets/<HF_OWNER>/<NEXUS_LOGIC_BUCKET>/state-backups/state.db`。**三 env 门**:HF_TOKEN + HF_OWNER + NEXUS_LOGIC_BUCKET 缺一自降级 no-op(WARN 不阻断 boot)。
+- `scripts/restore_state.py`(boot 期 hermes 起写锁前):`hf buckets cp` 从 state-backups 拉 → `/opt/data/.hermes/state.db`。本地已有且非 FORCE 则跳不覆盖。
+
+**7 维不足查证 vs 双项目**(anysearch + 源码 + GitHub issue,2026-08-06):
+| # | 维度 | 双项目 | 我 A 方案 |
+|---|------|--------|-----------|
+| 1 | WAL checkpoint | ❌ 排 WAL 无 checkpoint 丢写 | ✅ wal_checkpoint(TRUNCATE) |
+| 2 | 快照一致 | ❌ shutil.copy2 撕裂态 | ✅ sqlite3 backup API |
+| 3 | history 膨胀 | ❌ upload_folder 144 commit/天 git 累积 | ✅ hf buckets cp 覆写无累积 |
+| 4 | restore 覆盖保护 | ❌ snapshot_download 无脑 unlink | ✅ if exists not FORCE: skip |
+| 5 | shutdown 截断 | ❌ 无 SIGTERM hook 可半推库 | ✅ cp 失败不留半态 |
+| 6 | /tmp staging | ❌ tmpfs 小静默截半(同 hermes bug #35376) | ✅ `dir=_STAGING_DIR=/opt/data` 已补(空腹 NamedTemporaryFile dir=) |
+| 7 | FUSE 写主库 | ✅ 两项目本地盘对(反而非不足) | ✅ /opt/data 移出 |
+
+**落地态**(★关键,hermes 自查注意):
+- 两脚本 + start.sh 改 **本地 origin/main 未 git push HF repo**(红线,见 [[nexus-redline-hf-space-push]])。
+- **双脚本 → Bucket `scripts/` 冷备态闭环**(hf buckets cp 往返验 rc=0/cmp_rc=0 字节一致,2026-08-06)。
+- **start.sh 留本地未推** = 用户拆分推送决策(推 start.sh 触发 HF rebuild 过付费墙窗口,合并后续 operator 指令活化排移防分散消耗)。
+- ★**当前 HF Space 未 exec 双脚本**:HF repo 现役 start.sh(malformed 治本 commit `cc7cc21`)**无 L151-168 两调用行**(restore_state.py + uploader 还原卫士)→ 双脚本在 Bucket 冷备但 boot 不 trigger。
+- **★唯一活化阵 = git push HF repo start.sh 新版触发 rebuild** → HF 重启拉新 start.sh boot 读 `/data/scripts/restore_state.py`(L151)拉回 state.db + nohup uploader(L163-165)周期推 Bucket → 双脚本正式 exec。**push start.sh = 唯一活化闸,redline 停我手待用户拍板**。
+
+### 10.3 K-R7 推翻(telegram CF Worker,2026-08-05~06)—— 覆 §7 K-R7
+
+- **HF IP 段(不只 DNS)封 `api.telegram.org`** → hermes 原生 `telegram_network.py` DoH + fallback IP 死(14:31 log 实证:禁 fallback env 确生效但纯 HTTPXRequest else 分支仍 8 次全 timeout = HF 容器出不去 worker)。
+- commit `5b8cc2`:CF Worker `tele.nexush.workers.dev` 反代 + ALLOWED_TOKENS 白名单;config.yaml.template `telegram.extra.base_url` 入(PTB 默认 base_url 含 /bot 同格式)。
+- **进一步实证(2026-08-06 自定义域闭环)**:`*.workers.dev` 的 SNI 在 HF 出口审查设备关键字黑名单 → TLS 握手被 RST(SSL UNEXPECTED_EOF)。hermes 实测同 CF IP + SNI=cloudflare-dns.com 通 / SNI=*.workers.dev 死 / SNI=api.telegram.org 死 → 独立 IP/路由层,纯属 SNI 关键字过滤(HuggingMes 绑自定义域成 = 它 worker 域 SNI 不黑名单)。
+- **解 = Worker 绑自定义域 `tele.nexush.cc.cd`**(SNI 不在黑名单 → 握手通) + PTB custom_base_url 指绑域。config.yaml.template L180-181 已入(`base_url: https://tele.nexush.cc.cd/bot` + `base_file_url: https://tele.nexush.cc.cd/file/bot`)。
+- ⚠️**Worker 侧正则须改** `/^\/(?:file\/)?bot([0-9]+:[A-Za-z0-9_-]+)\//` 兼容 file 路径(否则 403)。
+- ★**pending(待用户 CF Dashboard)**:① CF Worker 绑自定义域 tele.nexush.cc.cd;② Worker 正则改兼容 /file/bot;③ ALLOWED_TOKENS 白名单填本 bot token;④ HF Secrets `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true`(禁原生 fallback IP,SNI 封下也超时,禁了消 boot 重连死循环);⑤ HF Restart。
+
+### 10.4 异常件提示(★hermes 自查时勿误以为是现役)
+
+- `/data/scripts/start.sh.pre_remediation_20260806`(Bucket 逻辑层,2026-08-06 10:54/13:19 两次推)→ 某 sync 推上去的预治理 start.sh 备份,**非现役**(现役 start.sh 在 HF repo Dockerfile CMD 启)。Bucket Volume 挂 /data/scripts/ 下此文件存在但 boot 不读它(Dockerfile CMD 指 `/home/user/app/start.sh` 镜像内 ENV HOME 路径,非 /data/scripts/)。**勿改勿删**(待用户定清理)。
+- `keepalive.py` 改(本地 git M 72 行)+ Bucket 已推(11:227)→ 同两脚本冷备态,改动在 Bucket 挂载 `/data/scripts/keepalive.py` 但现役 start.sh L173-177 `nohup keepalive.py` 已调它(此行未改)。keepalive 改是否激活取决于git push or 既 Bucket 又 start 不触 bump → 看 keepalive sys.path 路径逻辑是否碰 Bucket 版(boot L176 调 `$APP_DIR/scripts/keepalive.py`=`/data/scripts/keepalive.py`=Bucket 挂载版)→ **keepalive 改已随 Bucket 挂载 live**(不需推 start.sh,因 start.sh 调的是 /data/scripts/ 下此文件随 Volume 挂载已更新)。注意此与两脚本不同:keepalive 行已在旧 start.sh 存在,改文件即生效(不靠 start.sh 新行)。
+
+### 10.5 hermes 自查建议优先级
+
+1. **跑 `df -T /opt/data /data` 确认本地盘**:验 §10.1 治本落地(/opt/data 应 ext4/overlay 非 fuse)。
+2. **跑 `ls -la /opt/data/.hermes/state.db*`**:验 state.db 在本地盘 + 无 -wal/-shm 旁路(litestream 弃应有无 wal,有则查谁起 checkpoint)。
+3. **查 `env | grep -iE 'HF_OWNER|NEXUS_LOGIC_BUCKET|HF_TOKEN|HERMES_TELEGRAM_DISABLE_FALLBACK_IPS|OPENAI_API_KEY|API_SERVER_KEY|HERMES_DASHBOARD_BASIC_AUTH'`**(脱敏):验 §6 Secrets 齐。
+4. **查 HF log "disabled via via" / "database disk image is malformed"**:验 §10.1 + §10.3 闭环态。
+5. **chat 试回话**:验 omn + R1 + K-R8(dashboard "Chat unavailable: 1" 若在 = ui-tui 未拉新 base,K-R8 待 rebuild)。
+6. **telegram 试消息**:验 §10.3 CF Worker 自定义域闭环(若仍 timeout = Worker 待绑域/正则/ALLOWED_TOKENS 未完)。
+
+### 10.6 当前待办总表(★停我手待用户拍板的)
+
+| # | 项 | 阻我手原因 | 动作 |
+|---|----|-----------|------|
+| 1 | **git push HF repo start.sh 新版**(L151-168 两调用行)触发 rebuild 活化双脚本 | [[nexus-redline-hf-space-push]] 红线 | 用户拍板才 push;Bucket 推已完不需再动 |
+| 2 | HF Secrets 补 HF_OWNER + NEXUS_LOGIC_BUCKET | 部署侧 | 用户 HF Dashboard |
+| 3 | CF Worker §10.3 ①~④ | 待 CF Dashboard | 用户 CF Dashboard |
+| 4 | K-R8 base 镜像重 build 推 GHCR + HF rebuild 拉 | 涉 GHCR PAT | 用户本地 docker build/push |

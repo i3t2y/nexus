@@ -109,7 +109,9 @@ Space 内 `/data` 持久存储**已下线**。跨重启持久必须用 R2 / Supa
 
 ### Hermes 永续改造(2026-07 锁死后)
 
-HF 免费个人号旧 Docker hermes Space 因 2026-07 平台变更锁死:git push/Factory reboot 触发 rebuild=付费墙(雷区1:rebuild 付费,雷区2:改 hardware 收费不可逆,雷区3:pause 后 restart 可能 403 永锁)。Restart 用缓存镜像不触墙(安全)。方案=绝对静态化,四层分离:
+HF 免费个人号旧 Docker hermes Space 因 2026-07 平台变更锁死:git push/Factory reboot 触发 rebuild=付费墙(雷区1:rebuild 付费,雷区2:改 hardware 收费不可逆,雷区3:pause 后 restart 可能 403 永锁)。Restart 用缓存镜像不触墙(安全)。方案=绝对静态化,四层分离。
+
+> **永续架构动机完整来龙去脉**(三雷区+用户红线"git push 只用户手动"+架构师定调"确定性>灵活性"+目标绝对静态化+FROM ${ARG} 查证裁决+部署链骨架+待办)→ [docs/hermes/hermes-部署与永续架构动机.md](./hermes/hermes-部署与永续架构动机.md) §1~§6。本节一句动机,展开见该案卷。
 
 | 层 | 存哪 | 改触发 rebuild? | 文件 |
 |----|------|------|------|
