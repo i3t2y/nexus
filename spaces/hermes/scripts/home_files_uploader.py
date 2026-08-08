@@ -12,6 +12,12 @@ A 方案把 HERMES_HOME 移 /opt/data 本地盘治 state.db malformed,代价=重
   - config.yaml:dashboard 设置项
 state.db 不在此(state_db_uploader.py 独立管,走 SQLite backup API 取一致快照)。
 
+★2026-08-08 plugins/ 目录持久(config.yaml 的 enabled 标记保但插件代码本体不保,
+  ephemeral /opt/data 重启清盘丢 → dashboard 装的插件消失 + enabled 标记无对应代码
+  静默失效)。plugins/ 走 `hf buckets sync` 整目录多文件 sync(非单文件 cp),exclude
+  `.git/`(无用的 git 历史,省体积)+ `__pycache__`/`*.pyc`(重构时重建)。plugins/
+  本体是 git clone 进来的纯代码(install 不 pip 依赖,hermes 启动 import 时按需)。
+
 增量推送(省 HF rate limit):逐文件比本地 mtime+size vs 上次推送记录,未改跳。
 首次跑无记录则全推。修改窗口内 hermes 正写 .env/config.yaml 时,先读取拷 staging
 (读时一致快照,文件若被 hermes 重写,closed fd 仍是旧快照),不放 /tmp tmpfs(同
@@ -55,6 +61,23 @@ _FILES = [
     "memories/MEMORY.md",
     "memories/USER.md",
 ]
+
+# ★2026-08-08 plugins/ 整目录持久(dashboard 装的插件代码本体)。
+# 走 `hf buckets sync` 多文件 sync,排除 .git/(git 历史无用,省体积)+
+# __pycache__/*.pyc(变时重建)。hermes 装插件 = git clone --depth 1 入
+# HERMES_HOME/plugins/<name>/,payload 纯代码(install 不 pip 依赖)。
+# 本地缺 plugins/ 目录(无装任何插件)→ skip 不推空(prefetch 出错同)。
+# ★exclude 内置两 plugin(nexus-r2/nexus-ops):start.sh L103 每 boot 从 Bucket
+#   逻辑层 $APP_DIR/scripts/plugins/ cp 注入 HERMES_HOME/plugins/,无需 Bucket
+#   home-backups 轮转。若推 Bucket 会在 restore 期可能与 start.sh cp 竞态(覆盖
+#   顺序定,但不必要 — 内置本就每次 boot 强注)。只保 user dashboard 装的 plugin。
+_PLUGINS_DIR_REL = "plugins"
+# sync 的 exclude pattern(hf buckets sync --exclude 可多次):
+#  - .git / .git/ → 不保 git 历史(shutil.move 含 .git 但 restore 重装不需)
+#  - __pycache__/ + *.pyc → bytecode 缓存,变时重建
+#  - *.pyo → opt level 缓存(老 Py3 大多无)
+#  - nexus-r2 / nexus-ops → 内置两 plugin,start.sh 每 boot cp 注入,不入 Bucket
+_PLUGINS_EXCLUDE = [".git", "__pycache__/", "*.pyc", "*.pyo", "nexus-r2", "nexus-ops"]
 
 
 def _dest(rel: str) -> str:
@@ -147,6 +170,110 @@ def _upload_file(rel: str) -> bool:
             pass
 
 
+def _plugins_local_sig() -> tuple[int, int] | None:
+    """plugins/ 目录签名(总 mtime 最深改 + 总 size)或 None(目录缺/空)。
+
+    巡 plugins/<name>/ 各文件累 size + max mtime 作目录聚合签名。增时较粗但够判
+    "有任何变化"(uptime 内装/卸/改插件 → 签变 → 触 sync)。
+    ★与 _PLUGINS_EXCLUDE 一致:跳 .git/__pycache__/nexus-r2/nexus-ops(nexus 两
+    内置 start.sh 每 boot cp 注入,随 cp mtime 不定,纳入计数会致假签名变混 user plugins
+    变化),只数 user dashboard 装的 plugins。
+    """
+    root = _path(_PLUGINS_DIR_REL)
+    if not os.path.isdir(root):
+        return None
+    total_size = 0
+    max_mtime = 0
+    found = False
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            # 跳 .git/__pycache__(与 exclude 一致)
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in {".git", "__pycache__"}
+            ]
+            # 跳 nexus-r2/nexus-ops 内置(与 _PLUGINS_EXCLUDE 一致;start.sh 每 boot
+            # cp 注入,mtime 随 cp 不定,纳入会假签变混 user plugin 变化)
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in {"nexus-r2", "nexus-ops"}
+            ]
+            # 若当前 dirpath 自身就在内置目录下(不该达,前一行已剪 dirnames),
+            # 兜底:跳过其文件
+            parts = dirpath.split(os.sep)
+            if "nexus-r2" in parts or "nexus-ops" in parts:
+                continue
+            for fn in filenames:
+                if fn.endswith((".pyc", ".pyo")):
+                    continue
+                fp = os.path.join(dirpath, fn)
+                try:
+                    st = os.stat(fp)
+                    total_size += int(st.st_size)
+                    if int(st.st_mtime) > max_mtime:
+                        max_mtime = int(st.st_mtime)
+                    found = True
+                except OSError:
+                    pass
+    except OSError:
+        return None
+    if not found:
+        return None
+    return (max_mtime, total_size)
+
+
+def _upload_plugins() -> bool:
+    """plugins/ 整目录 → Bucket home-backups/plugins/(走 hf buckets sync)。
+
+    本地缺 plugins/(无装任何插件)→ 跳不推空。sync 用 --no-delete(默认,不删
+    Bucket 不在 source 的文件,避误删)。
+    """
+    src = _path(_PLUGINS_DIR_REL)
+    if not os.path.isdir(src):
+        # 无装任何插件 → skip(不报错,首启前正常)
+        return True
+    if not os.listdir(src):
+        return True
+    dest = f"hf://buckets/{_OWNER}/{_BUCKET_NAME}/{_BACKUP_SUBDIR}/{_PLUGINS_DIR_REL}"
+    cmd = ["hf", "buckets", "sync", src, dest]
+    for pat in _PLUGINS_EXCLUDE:
+        cmd.extend(["--exclude", pat])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 目录 sync 容多文件,超 300s
+            env=os.environ.copy(),
+        )
+        if result.returncode != 0:
+            print(
+                f"[home-upload] plugins/ hf buckets sync failed code="
+                f"{result.returncode} stderr={result.stderr.strip()[:300]}",
+                flush=True,
+            )
+            return False
+        # stdout 含 sync plan(files created/updated),quiet 不打每文件,只汇总:
+        out = (result.stdout or "").strip()
+        # 抽 created/updated 行计(quiet 或 agent format JSONL)
+        n_created = out.count('"action": "create"') + out.count("created")
+        n_updated = out.count('"action": "update"') + out.count("updated")
+        sig = _plugins_local_sig()
+        size = sig[1] if sig else 0
+        print(
+            f"[home-upload] plugins/ ok bytes={size} "
+            f"(created~{n_created} updated~{n_updated}) dest={dest}",
+            flush=True,
+        )
+        return True
+    except subprocess.TimeoutExpired:
+        print("[home-upload] plugins/ hf buckets sync timeout (300s)", flush=True)
+        return False
+    except Exception as e:  # noqa: BLE001
+        print(f"[home-upload] plugins/ failed: {e}", flush=True)
+        return False
+
+
 def sync_once() -> None:
     if not (_have_hf_cli() and _have_creds()):
         return
@@ -167,6 +294,14 @@ def sync_once() -> None:
         if _upload_file(rel):
             next_state[rel] = list(sig)
         # 失败保留旧 state 下轮重试(不更 next_state)
+    # ★2026-08-08 plugins/ 目录 sync(独立增量 sig 路径,不混单文件 state)
+    psig = _plugins_local_sig()
+    if psig is not None:
+        pkey = "_plugins_dir_sig"
+        if list(psig) != state.get(pkey):
+            if _upload_plugins():
+                next_state[pkey] = list(psig)
+        # 失败保旧 state 下轮重试
     if next_state != state:
         _save_state(next_state)
 

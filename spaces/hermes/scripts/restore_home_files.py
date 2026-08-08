@@ -7,6 +7,10 @@ A 方案把 HERMES_HOME 移 /opt/data 本地盘治 state.db malformed,代价=重
   - memories/MEMORY.md + memories/USER.md(hermes 个体记忆)
   - config.yaml(dashboard 设置项:provider/参数/plugins;★start.sh 改"缺才 cp"后
     template 不再覆盖,但旧盘清空仍丢,故仍在此脚本拉回)
+★2026-08-08 plugins/ 目录拉回:dash 装的插件代码本体持久(单文件 _FILES 只保
+  config.yaml 的 enabled 标记,但插件代码本体重启清盘丢 → enabled 无对应代码静默
+  失效)。走 `hf buckets sync` 整目录拉(非逐文件 cp),exclude 同 uploader(.git
+  历史无用/__pycache__ 重构时重建)。
 本脚本 boot 期(hermes 起前)从 Bucket home-backups/ 拉回上述文件落 HERMES_HOME。
 
 拉回策略(零臆断,容错过,与 restore_state.py 同模式):
@@ -52,6 +56,14 @@ _FILES = [
     "config.yaml",
 ]
 
+# ★2026-08-08 plugins/ 整目录拉回(dash 装的插件代码本体持久)。
+# 走 `hf buckets sync` 整目录 sync(非逐文件 cp),exclude 同 uploader:
+#  .git(git 历史 uploader 已不保)/ __pycache__/*.pyc(重构时本地重建)。
+#  nexus-r2/nexus-ops:内置两 plugin,start.sh L103 每 boot cp 注入,
+#   无需 Bucket 路径(避与 start.sh cp 竞态,内置恒由 start.sh 源覆)。
+_PLUGINS_DIR_REL = "plugins"
+_PLUGINS_EXCLUDE = [".git", "__pycache__/", "*.pyc", "*.pyo", "nexus-r2", "nexus-ops"]
+
 
 def _have_creds() -> bool:
     return bool(os.getenv("HF_TOKEN") and _OWNER and _BUCKET_NAME)
@@ -62,9 +74,10 @@ def _have_hf_cli() -> bool:
 
 
 def _ensure_dirs() -> None:
-    """保 HERMES_HOME + memories/ 目录在(应当 start.sh 已 mkdir,兜底防 race)。"""
+    """保 HERMES_HOME + memories/ + plugins/ 目录在(应当 start.sh 已 mkdir,兜底防 race)。"""
     os.makedirs(_HERMES_HOME, exist_ok=True)
     os.makedirs(os.path.join(_HERMES_HOME, "memories"), exist_ok=True)
+    os.makedirs(os.path.join(_HERMES_HOME, _PLUGINS_DIR_REL), exist_ok=True)
 
 
 def _restore_one(rel: str) -> str:
@@ -95,6 +108,44 @@ def _restore_one(rel: str) -> str:
         return f"skip: {rel} {e}"
 
 
+def _restore_plugins() -> str:
+    """plugins/ 整目录从 Bucket home-backups/plugins/ → HERMES_HOME/plugins/(走 hf buckets sync)。
+
+    拉回策略:ephemeral /opt/data 重启清盘 → 本地 plugins/ 空 → sync 直接入(无覆盖
+    风险;boot 期 hermes 起前无竞态)。Bucket 无 plugins/(uploader 未跑过 / 无装插件)
+    → 跳。注:sync --no-delete(默认,不删本地不在 Bucket 的文件,但本地本应空无影响)。
+    """
+    src = f"hf://buckets/{_OWNER}/{_BUCKET_NAME}/{_BACKUP_SUBDIR}/{_PLUGINS_DIR_REL}"
+    dst = os.path.join(_HERMES_HOME, _PLUGINS_DIR_REL)
+    os.makedirs(dst, exist_ok=True)  # _ensure_dirs 已建,兜底
+    cmd = ["hf", "buckets", "sync", src, dst]
+    for pat in _PLUGINS_EXCLUDE:
+        cmd.extend(["--exclude", pat])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 目录 sync 容多文件,超 300s
+            env=os.environ.copy(),
+        )
+        if result.returncode != 0:
+            # Bucket 无 plugins/(uploader 未跑过 / 无装过插件)→ 首启预期,非错
+            return f"skip: plugins/ bucket empty or sync failed (code={result.returncode})"
+        out = (result.stdout or "").strip()
+        # 抽计数(quiet 或 agent format JSONL)
+        n_created = out.count('"action": "create"') + out.count("created")
+        n_updated = out.count('"action": "update"') + out.count("updated")
+        if n_created == 0 and n_updated == 0:
+            # 无变化也 ok(但通常 boot 时本地空 → 全 create)
+            return f"ok: plugins/ synced (created~{n_created} updated~{n_updated})"
+        return f"ok: restored plugins/ (created~{n_created} updated~{n_updated})"
+    except subprocess.TimeoutExpired:
+        return "skip: plugins/ hf buckets sync timeout (300s)"
+    except Exception as e:  # noqa: BLE001
+        return f"skip: plugins/ {e}"
+
+
 def restore_once() -> str:
     """返多文件状态汇总字符串,供 start.sh 日志。无副作用崩。"""
     if not _have_hf_cli():
@@ -105,6 +156,8 @@ def restore_once() -> str:
     lines = [f"home-backups restore from hf://buckets/{_OWNER}/{_BUCKET_NAME}/{_BACKUP_SUBDIR}"]
     for rel in _FILES:
         lines.append(f"  {rel}: {_restore_one(rel)}")
+    # ★2026-08-08 plugins/ 整目录拉回(在文件之后,dash 装的插件代码本体持久)
+    lines.append(f"  {_PLUGINS_DIR_REL}/: {_restore_plugins()}")
     return "\n".join(lines)
 
 
