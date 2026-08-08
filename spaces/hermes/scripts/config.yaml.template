@@ -179,8 +179,13 @@ telegram:
   extra:
     base_url: https://tele.nexush.cc.cd/bot
     base_file_url: https://tele.nexush.cc.cd/file/bot
+# discord(★2026-08-08 永关):HF 出 SNI 黑名单封 discord 段同 telegram,且 discord
+#   adapter 硬编无 extra.base_url 开关(仅 DISCORD_PROXY env 兜底)→ 无 worker 反代路(不像
+#   telegram 能借 base_url 走 CF Worker)。故 enabled=false 永关,避 boot fail-closed 噪音
+#   + toggle 字面与 runtime 态对齐(不再 enabled=true 但无 token fail=关 的隐性态)。
+#   若未来 HF 出站解封或 discord 加 base_url 开关,改回 true + 补 DISCORD_BOT_TOKEN 即复。
 discord:
-  enabled: true
+  enabled: false
 
 # ── auxiliary 副任务用主 provider(omn)+ 宽 timeout 容冷启动 ──
 # 2026-08-07 修:title_generation 默认 fallback chain(openrouter→nous→custom→api-key)无

@@ -162,27 +162,29 @@ def _fs_type_diag() -> None:
 
 
 def _egress_diag() -> None:
-    """一次性出站诊断(★2026-08-06 K-R7 CF Worker 路定层)。
+    """一次性出站诊断(★2026-08-06 K-R7 CF Worker 路定层 + 08-06 闭环对齐 cc.cd)。
 
-    hermes telegram base_url 已指 CF Worker `tele.nexush.workers.dev`,Secret
-    HERMES_TELEGRAM_DISABLE_FALLBACK_IPS 已生效(else 分支纯 HTTPXRequest),但 boot
-    仍 8 次全 timeout。本地测 worker 活(403 1.2s)。定 HF 容器连 worker 哪层死。
+    hermes telegram base_url 指 CF Worker 自定义域 `tele.nexush.cc.cd`(08-06 K-R7 闭环:
+    *.workers.dev 的 SNI 在 HF 出口审查设备关键字黑名单 → TLS 握手 RST;绑自定义域 cc.cd
+    SNI 不在黑名单 → 握手通)。Secret HERMES_TELEGRAM_DISABLE_FALLBACK_IPS 已生效(else
+    分支纯 HTTPXRequest)。定 HF 容器连 worker 三层状态 + 现 502(upstream 透传段)溯源。
 
     纯 Python 测三层(不依赖 curl/HF PATH):
       DNS   socket.getaddrinfo —— 解析层
       TCP   socket.create_connection —— 连接层
       TLS+HTTP  httpx.get —— TLS+应用层
     对照三 host(均 port 443):
-      tele.nexush.workers.dev  主测(CF Worker 反代 telegram)
-      api.telegram.org         对照(已知 HF IP 封死)
-      nonoke-omn.hf.space       对照(HF 内网该活)
+      tele.nexush.cc.cd       主测(K-R7 闭环后的现役 CF Worker 反代 telegram 自定义域)
+      api.telegram.org        对照(已知 HF IP 封死,K-R7 旧 DoH+fallback 推翻)
+      nonoke-omn.hf.space     对照(HF 内网该活,omn 主 provider)
     每行标 [PASS/FAIL] + 耗时 + 错误类型,stdout 进 keepalive.log。
+    注:base_file_url 同 host 但 /file/bot 路径,worker 反代 file 端点透传同链路,主测 /bot 足矣。
     """
     import socket
     import time as _t
 
     targets = {
-        "worker": "tele.nexush.workers.dev",
+        "worker": "tele.nexush.cc.cd",
         "telegram": "api.telegram.org",
         "omn": "nonoke-omn.hf.space",
     }
