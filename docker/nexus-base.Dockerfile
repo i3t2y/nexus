@@ -130,7 +130,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements-base.txt
 # pin tag 不 pin main(防 break;升级改 tag + rebuild)
 # clone 到 /opt/hermes-agent(系统级只读供 import,root 拥有,user 只读 import 即可)
 # editable --system 安装:egg-link 写进系统 site-packages 指向源码,任何 user 能 import run_agent
-ARG HERMES_AGENT_TAG=v2026.7.30
+ARG HERMES_AGENT_TAG=v2026.8.3
 RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
         https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
     && uv pip install --system --no-cache-dir -e /opt/hermes-agent --no-deps
@@ -153,7 +153,7 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
 #   - 缺 env → list_providers() 空 → gate `SystemExit("Refusing to bind...")` fail-closed 拒起
 #   - 配齐 → gate 通过 → /login 密码表单(scrypt 哈希 + HMAC stateless cookie,无 OAuth/IDP/DB)
 #
-# 仅改一处 CORS(web_server.py 行 345,v0.19.1 + main 845031a grep count=1 双证,行号一致零漂):
+# 仅改一处 CORS(web_server.py v0.20.0 v2026.8.3 核:patch_web_server.py 文本锚 allow_origin_regex=... v0.20.0 仍在 L373-375,zero drift):
 #   allow_origin_regex(限 localhost)→ allow_origins=["*"]。
 #   解 HF iframe embed — sonoke-h.hf.space 在 huggingface.co iframe 内渲染,SPA fetch JS/CSS/WS
 #   跨域回 sonoke-h.hf.space/api/*,默认 CORS regex 拒 → 换 allow_origins=["*"] 放行所有域
@@ -162,8 +162,12 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
 #   鉴权走 BasicAuthProvider cookie(HMAC-sig),非 CORS credential — allow_origins=["*"] 与 cookie
 #   鉴权无冲突(CORS preflight 不挡 SameSite cookie 流)。
 #
-# 注:HERMES_AGENT_TAG 仍 pin v2026.7.30(v0.19.1,470cf66)。main 845031a(8/2)web_server.py 三锚点
-#   行号全一致零漂移(已核),且 main 仅多 1 chore commit,无功能改动。保 tag 不动防 break,升级改 tag+rebuild。
+# 注:HERMES_AGENT_TAG 升 v2026.8.3(v0.20.0,3c27eb6,2026-08-03 release)自 v2026.7.30(v0.19.1,470cf66)。
+#   v0.19.1→v0.20.0 全核兼容:requires-python ">=3.11,<3.14" 同(3.11 可跑);root engines node >=22.22.0 npm
+#   <11.10.0||>=11.17.0 同(我 node 22.23.2 满足);pyproject deps diff 空;无 PEP 695/3.12+ 语法;
+#   patch 文本锚 allow_origin_regex v0.20.0 L373-375 在(zero drift);plugins_cmd _install_plugin_core L450 在;
+#   Discord _enable_from_env L1868-1871 在;skills SKILLS_DIR/MANIFEST_FILE/HubLockFile 同;gateway run/
+#   dashboard/--accept-hooks/--replace/HERMES_TUI_DIR/HERMES_WEB_DIST flag+env 全在。升级改 tag 一行 + rebuild。
 #
 # 施工:独立脚本 docker/patch_web_server.py(只 1 锚点;避 shell 行续转义 + Python 单行分号地雷;
 #   脚本多行 + 函数,py_compile 可验;锚漂即 build 期 AssertionError 拦建,跨升级稳健)。
