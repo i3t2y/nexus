@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,8 +37,20 @@ _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
 _MANIFEST_KEY = "supabase-snapshot/_manifest.json"
 
 
+def _env_diag() -> dict[str, bool]:
+    """诊断:HF Secrets 注入探测(不回显真值,仅 presence)。"""
+    return {
+        "R2_ENDPOINT": bool(os.getenv("R2_ENDPOINT")),
+        "R2_ACCESS_KEY_ID": bool(os.getenv("R2_ACCESS_KEY_ID")),
+        "R2_SECRET_ACCESS_KEY": bool(os.getenv("R2_SECRET_ACCESS_KEY")),
+        "SUPABASE_URL": bool(os.getenv("SUPABASE_URL")),
+        "SUPABASE_SERVICE_ROLE_KEY": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")),
+        "SUPABASE_ANON_KEY": bool(os.getenv("SUPABASE_ANON_KEY")),
+    }
+
+
 def _r2():
-    return boto3.client(
+    client = boto3.client(
         "s3",
         endpoint_url=os.getenv("R2_ENDPOINT"),
         aws_access_key_id=os.getenv("R2_ACCESS_KEY_ID", ""),
@@ -45,10 +58,15 @@ def _r2():
         region_name=os.getenv("R2_REGION", "auto"),
         config=Config(connect_timeout=5, read_timeout=30, retries={"max_attempts": 3}),
     )
+    if not os.getenv("R2_ACCESS_KEY_ID") or not os.getenv("R2_SECRET_ACCESS_KEY"):
+        raise RuntimeError("[_r2] R2_ACCESS_KEY_ID or R2_SECRET_ACCESS_KEY empty (HF Secrets missing)")
+    return client
 
 
 def _supa():
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
+    if not os.getenv("SUPABASE_URL") or not key:
+        raise RuntimeError("[_supa] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY empty (HF Secrets missing)")
     return create_client(os.getenv("SUPABASE_URL", ""), key)
 
 
@@ -88,20 +106,16 @@ def sync_once() -> dict[str, Any]:
     for t in _TABLES:
         try:
             rows = _snapshot_table(supa, t)
+        except Exception as e:  # noqa: BLE001
+            counts[f"{t}_supa_err"] = f"[{type(e).__name__}] {e}"
+            continue
+        try:
             body = json.dumps(rows, ensure_ascii=False, default=str).encode()
             key = f"supabase-snapshot/{t}.json"
             _atomic_upload(r2, key, body)
             # 完整性校验和：sha256 + 字节数；restore 时复算比对挡 R2 静默损坏/截断
             sha = hashlib.sha256(body).hexdigest()
             counts[t] = {"rows": len(rows), "sha256": sha, "bytes": len(body)}
-            # 登记 backup_snapshots 元数据（恢复时按 table_name + created_at 定位快照）
-            supa.table("backup_snapshots").insert({
-                "table_name": t,
-                "r2_key": key,
-                "row_count": len(rows),
-                "sha256": sha,
-                "r2_size": len(body),
-            }).execute()
             manifest[t] = {
                 "r2_key": key,
                 "sha256": sha,
@@ -110,7 +124,19 @@ def sync_once() -> dict[str, Any]:
                 "updated_at": ts,
             }
         except Exception as e:  # noqa: BLE001
-            counts[f"{t}_err"] = str(e)  # 记错误而非崩
+            counts[f"{t}_r2_err"] = f"[{type(e).__name__}] {e}"
+            continue
+        try:
+            # 登记 backup_snapshots 元数据（恢复时按 table_name + created_at 定位快照）
+            supa.table("backup_snapshots").insert({
+                "table_name": t,
+                "r2_key": key,
+                "row_count": len(rows),
+                "sha256": sha,
+                "r2_size": len(body),
+            }).execute()
+        except Exception as e:  # noqa: BLE001
+            counts[f"{t}_backupmeta_err"] = f"[{type(e).__name__}] {e}"
     # 写 manifest 索引（各表最新 sha256/size），便于 restore 一步定位 + 完整性校对
     if manifest:
         try:
@@ -123,12 +149,22 @@ def sync_once() -> dict[str, Any]:
 
 def main() -> None:
     print(f"[persist] start, interval={_INTERVAL}s, bucket={_BUCKET}", flush=True)
+    print(f"[persist] env diag={_env_diag()}", flush=True)
     while True:
         try:
             res = sync_once()
             print(f"[persist] synced {res}", flush=True)
         except Exception as e:  # noqa: BLE001
-            print(f"[persist] fatal {e}", flush=True)
+            etype = type(e).__name__
+            msg = str(e)
+            src = "?"
+            if msg.startswith("[_r2]"):
+                src = "R2"
+            elif msg.startswith("[_supa]"):
+                src = "SUPA"
+            tb = traceback.format_exc().splitlines()
+            tb_short = " | ".join(tb[-3:]) if len(tb) >= 3 else " | ".join(tb)
+            print(f"[persist] fatal[{src}/{etype}] {msg} | tb={tb_short} | env={_env_diag()}", flush=True)
         time.sleep(_INTERVAL)
 
 
