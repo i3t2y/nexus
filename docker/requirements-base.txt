@@ -8,7 +8,10 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 gradio==5.9.1
 httpx==0.28.1
-supabase==2.13.0
+supabase==2.31.0
+# ↑ 2.13.0→2.31.0:2.13.0 SyncClient.__init__ JWT 正则校验拒收 Supabase 新式 sb_secret_/sb_publishable_ key
+#   (非 JWT 无点)→create_client() 当场抛 SupabaseException("Invalid API key"),HTTP 没发。
+#   v2.16.0(PR#1151)删 client.py:62-64 JWT 校验,新 key 直用。HF Secrets 填 sb_secret_ 后 persist/restore/keepalive/storage 全死根因修复。
 boto3==1.36.0
 
 # === langgraph 额外 ===
