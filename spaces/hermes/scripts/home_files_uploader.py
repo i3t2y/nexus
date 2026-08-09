@@ -95,30 +95,28 @@ _PLUGINS_DIR_REL = "plugins"
 #  - nexus-r2 / nexus-ops → 内置两 plugin,start.sh 每 boot cp 注入,不入 Bucket
 _PLUGINS_EXCLUDE = [".git", "__pycache__/", "*.pyc", "*.pyo", "nexus-r2", "nexus-ops"]
 
-# ★2026-08-08 skills/ 持久(dashboard 装的第三方技能本体 + .hub/lock.json 追踪)。
-# hermes skills install 落 HERMES_HOME/skills/<category>/<name>/,并写
-# skills/.hub/lock.json(Skills Hub 追踪 source/install_path/content_hash)。
-# ephemeral /opt/data 重启清盘 → 技能本体 + lockfile 全丢 → hermes 不认已装。
+# ★2026-08-09 skills/ 持久(整目录推 — 装=存,免补 lock.json)。
+# hermes skills install 落 HERMES_HOME/skills/<category>/<name>/ 并写
+# skills/.hub/lock.json;手装(curl+unzip+mv)不走 CLI 故 lock 缺登记。原路线 B
+# 仅推 lock.json 列的 user skills → 手装 skill 漏推 → Restart 丢。改整目录推:
+# 任何落 skills/ 的 skill(CLI 装/手装/bundle 注入)即被推 = 装 = 持久。
 #
-# 与 plugin 关键差异:skills/ 同目录混 bundled(镜像内 /opt/hermes-agent/skills/ 每
-# 启动 sync_skills 注入)+ user-installed(dashboard 装),无固定目录名能排 bundled
-# (nexus-r2/ops 那种两固定名排除不适用)。故**不能整目录 sync**(会把 bundled 飘移
-# 推 Bucket,restore 期 stale 覆盖镜像新 bundled)。
+# bundled 飘移复推无害:bundle sync 每启动从镜像注入 bundled(覆旧),Bucket 内 bundled
+# 旧快照 restore 拉回后次启被镜像版覆=无残留死件污染。代价=Bucket 多存 bundled 副本
+# (MB 级,远不到配额,可接受)。换"装=存 + 免手补 lock"的运维收益值此代价。
 #
-# 路线 B(精准):仅推 lockfile 列的 user skills + .hub 徽志(lock.json/audit.log/
-# taps.json),bundled 不碰。基于 .hub/lock.json list_installed() 的 install_path
-# 构造 staging,排除 bundled-manifest/quarantine/index-cache(bundle sync 每启动重建)。
-# .no-bundled-skills marker 在 HERMES_HOME 根(非 skills/ 下,走 _FILES 单文件路径)。
+# exclude(与 restore_home_files.py _SKILLS_EXCLUDE 对齐,双向一致防 diff 抖动):
+#  - .bundled_manifest:bundle sync 每启动 _write_manifest 重建,推旧干扰 sync diff
+#  - .hub/quarantine .hub/index-cache:装期临时/搜索缓存,可重建
+#  - .git __pycache__ *.pyc *.pyo:同 plugin
 _SKILLS_DIR_REL = "skills"
-_HUB_DIR_REL = "skills/.hub"
-# .hub 下需保(lockfile 追踪 + 徽志,丢则 hermes 不认已装 / 丢审计 / 丢 tap 配):
-_HUB_KEEP = ("lock.json", "audit.log", "taps.json")
-# .hub 下不推(临时/可重建,bundle sync 每启动重建或装完移走):
-_HUB_EXCLUDE_DIRS = ("quarantine", "index-cache")
-# 路线 B 推送的 staging 内 skills 子树(构造 user-skills + .hub 徽志,无 bundled):
-# 仅含 user skills 子目录 + .hub/{lock.json,audit.log,taps.json} 三文件。
-# skills/ 根的 .bundled_manifest(SKILLS_DIR/.bundled_manifest)不推,因 bundle sync
-# 每启动 _write_manifest 重建(L934/1077/1381),推旧 manifest 干扰 sync diff 逻辑。
+# hf buckets sync --exclude(hf CLI 把目录当 glob pattern,尾部 / 可省):
+_SKILLS_EXCLUDE = [
+    ".git", "__pycache__/", "*.pyc", "*.pyo",
+    ".bundled_manifest",
+    ".hub/quarantine", ".hub/quarantine/",
+    ".hub/index-cache", ".hub/index-cache/",
+]
 
 
 def _dest(rel: str) -> str:
@@ -315,67 +313,42 @@ def _upload_plugins() -> bool:
         return False
 
 
-def _lock_list_installed() -> list[dict]:
-    """从 .hub/lock.json 枚举 user-installed skills(返 [{name, install_path, ...}])。
-
-    hermes skills install 落库时 record_install 写 lock.json installed[<name>] = {...}
-    (skills_hub.py HubLockFile.record_install L3519)。bundled skills 不进 lock(由
-    bundle sync 的 .bundled_manifest 单独管)。故 lock.json 是 user skills 的唯一真源。
-    lock 缺/坏 → 返 [](无装 user skill,首启预期,非错)。
-    """
-    lock_p = _path(os.path.join(_HUB_DIR_REL, "lock.json"))
-    try:
-        data = json.loads(lock_p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    installed = data.get("installed") if isinstance(data, dict) else None
-    if not isinstance(installed, dict):
-        return []
-    result = []
-    for name, entry in installed.items():
-        if isinstance(entry, dict):
-            result.append({"name": name, **entry})
-    return result
-
-
 def _skills_local_sig() -> tuple[int, int] | None:
-    """user-installed skills 目录签名(总 mtime + 总 size)或 None(无 user skill)。
+    """skills/ 整目录签名(总 mtime 最深改 + 总 size)或 None(目录缺/空)。
 
-    路线 B 核心:仅基于 .hub/lock.json list_installed() 的 install_path 数 user skills,
-    bundled skills 不数(无固定目录名能排,且 bundle sync 每启动 cp 其 mtime 随 cp 飘)。
-    install_path 是相对 SKILLS_DIR 的路径(如 'github/my-skill' 或 'flat-skill')。
-    数每个 user skill 子树全文件(*.pyc/__pycache__/.git 排,同 plugin)累 size + max mtime。
+    整推路(2026-08-09):数 skills/ 全子树(含 bundled + user skills),与 restore 一致。
+    跳 .git/__pycache__/*.pyc/.bundled_manifest/.hub/quarantine/.hub/index-cache
+    (与 _SKILLS_EXCLUDE 对齐;这些 sync 也不推,不计签名防假变)。
+    bundle sync 每 boot cp 注入 bundled,其 mtime 随 cp 飘会推签名变 — 但变即触
+    sync=推 — 增量幂等(Bucket 内旧值不一致就 update,一致跳),代价多几次 sync 调用
+    非 bloat。增装/卸/改 skill → 签变 → 触整推 → Bucket 更。
     """
-    installed = _lock_list_installed()
-    if not installed:
-        return None
     root = _path(_SKILLS_DIR_REL)
     if not os.path.isdir(root):
         return None
+    # sync 排除的目录(pwd-key),walk 期剪同组防计签名假变:
+    _skip_dirs = {".git", "__pycache__", "quarantine", "index-cache"}
     total_size = 0
     max_mtime = 0
     found = False
-    for entry in installed:
-        install_path = entry.get("install_path") or ""
-        if not install_path:
-            continue
-        skill_dir = os.path.join(root, install_path)
-        if not os.path.isdir(skill_dir):
-            continue
-        for dirpath, dirnames, filenames in os.walk(skill_dir):
-            dirnames[:] = [d for d in dirnames if d not in {".git", "__pycache__"}]
-            for fn in filenames:
-                if fn.endswith((".pyc", ".pyo")):
-                    continue
-                fp = os.path.join(dirpath, fn)
-                try:
-                    st = os.stat(fp)
-                    total_size += int(st.st_size)
-                    if int(st.st_mtime) > max_mtime:
-                        max_mtime = int(st.st_mtime)
-                    found = True
-                except OSError:
-                    pass
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 剪 .hub/{quarantine,index-cache} + 通用 .git/__pycache__
+        dirnames[:] = [d for d in dirnames if d not in _skip_dirs]
+        # 跳 .bundled_manifest 文件(逐文件过滤 + 不单计),见下
+        for fn in filenames:
+            if fn.endswith((".pyc", ".pyo")):
+                continue
+            if fn == ".bundled_manifest":
+                continue
+            fp = os.path.join(dirpath, fn)
+            try:
+                st = os.stat(fp)
+                total_size += int(st.st_size)
+                if int(st.st_mtime) > max_mtime:
+                    max_mtime = int(st.st_mtime)
+                found = True
+            except OSError:
+                pass
     if not found:
         return None
     return (max_mtime, total_size)
@@ -387,84 +360,59 @@ def _skills_dest_dir() -> str:
 
 
 def _upload_skills() -> bool:
-    """user-installed skills 本体 + .hub 徽志 → Bucket home-backups/skills/。
+    """skills/ 整目录 → Bucket home-backups/skills/(走 hf buckets sync 整推)。
 
-    路线 B:构造 staging 仅含 user skills(从 lock.json install_path 列)+ .hub 徽志
-    (lock.json/audit.log/taps.json),不含 bundled(canvas 区分不了故必须基于 lockfile 精准)。
-    走 `hf buckets sync staging/. dest/skills/ --no-delete`(整 staging sync,精准增量)。
-    本地无 user skill(lock 空)→ 跳不推空(首启正常)。
+    整推路(2026-08-09):直 sync skills/ 全子树(含 bundled)入 Bucket。装任何 skill
+    (CLI 装/手装/bundle)落 skills/ 即被推 = 装 = 持久,免手补 lock.json。
+    sync --no-delete(默认,不删 Bucket 不在本地文件,避误删 user 卸载的残留矛盾 —
+    但整推下卸 skill 签变触发 sync,Bucket 旧 skill 仍留=死件,可接受,需手清或 sync--delete
+    专清);--exclude _SKILLS_EXCLUDE 避 bloat。
+    本地缺 skills/ 目录 → 跳不推空(首启前无装任何 skill)。
     """
-    installed = _lock_list_installed()
-    if not installed:
-        return True  # 无 user skill → skip(不报错,首启前正常)
-    skills_root = _path(_SKILLS_DIR_REL)
-    if not os.path.isdir(skills_root):
+    src = _path(_SKILLS_DIR_REL)
+    if not os.path.isdir(src):
         return True
-    # 构造 staging:复 user skills 子树 + .hub 徽志三文件
-    staging = tempfile.mkdtemp(prefix="home-skills-", dir=_STAGING_DIR)
+    if not os.listdir(src):
+        return True  # 空目录 skip
+    # _STAGING_DIR 已 _ensure'd(插件/文件 push 路径同)。整推不走 staging(copytree
+    #   深 skills/ 树慢且忽略模式重复),直接 hf buckets sync src→dest(hf CLI 内读源
+    #   上传,better-than-py-copytree 大目录性能 + 一致 exclude 语义)。
+    dest = _skills_dest_dir()
+    cmd = ["hf", "buckets", "sync", src, dest]
+    for pat in _SKILLS_EXCLUDE:
+        cmd.extend(["--exclude", pat])
     try:
-        st_skills = os.path.join(staging, "skills")
-        os.makedirs(st_skills, exist_ok=True)
-        n_skills = 0
-        for entry in installed:
-            install_path = entry.get("install_path") or ""
-            if not install_path:
-                continue
-            src = os.path.join(skills_root, install_path)
-            if not os.path.isdir(src):
-                continue
-            dst = os.path.join(st_skills, install_path)
-            shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
-                ".git", "__pycache__", "*.pyc", "*.pyo"))
-            n_skills += 1
-        if n_skills == 0:
-            return True  # lock 列了但本地全缺(不该达,兜底 skip)
-        # .hub 徽志三文件(lock.json 追踪 + audit.log 审计 + taps.json github tap 配)
-        hub_src = os.path.join(skills_root, ".hub")
-        if os.path.isdir(hub_src):
-            st_hub = os.path.join(st_skills, ".hub")
-            os.makedirs(st_hub, exist_ok=True)
-            for fname in _HUB_KEEP:
-                fsrc = os.path.join(hub_src, fname)
-                if os.path.isfile(fsrc):
-                    shutil.copy2(fsrc, os.path.join(st_hub, fname))
-        dest = _skills_dest_dir()
-        cmd = ["hf", "buckets", "sync", st_skills + os.sep, dest]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                env=os.environ.copy(),
-            )
-            if result.returncode != 0:
-                print(
-                    f"[home-upload] skills/ hf buckets sync failed code="
-                    f"{result.returncode} stderr={result.stderr.strip()[:300]}",
-                    flush=True,
-                )
-                return False
-            out = (result.stdout or "").strip()
-            n_created = out.count('"action": "create"') + out.count("created")
-            n_updated = out.count('"action": "update"') + out.count("updated")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=os.environ.copy(),
+        )
+        if result.returncode != 0:
             print(
-                f"[home-upload] skills/ ok user_skills={n_skills} "
-                f"(created~{n_created} updated~{n_updated}) dest={dest}",
+                f"[home-upload] skills/ hf buckets sync failed code="
+                f"{result.returncode} stderr={result.stderr.strip()[:300]}",
                 flush=True,
             )
-            return True
-        except subprocess.TimeoutExpired:
-            print("[home-upload] skills/ hf buckets sync timeout (300s)", flush=True)
             return False
-        except Exception as e:  # noqa: BLE001
-            print(f"[home-upload] skills/ failed: {e}", flush=True)
-            return False
-    finally:
-        try:
-            shutil.rmtree(staging, ignore_errors=True)
-        except OSError:
-            pass
+        out = (result.stdout or "").strip()
+        n_created = out.count('"action": "create"') + out.count("created")
+        n_updated = out.count('"action": "update"') + out.count("updated")
+        sig = _skills_local_sig()
+        size = sig[1] if sig else 0
+        print(
+            f"[home-upload] skills/ ok bytes={size} "
+            f"(created~{n_created} updated~{n_updated}) dest={dest}",
+            flush=True,
+        )
+        return True
+    except subprocess.TimeoutExpired:
+        print("[home-upload] skills/ hf buckets sync timeout (300s)", flush=True)
+        return False
+    except Exception as e:  # noqa: BLE001
+        print(f"[home-upload] skills/ failed: {e}", flush=True)
+        return False
 
 
 def sync_once() -> None:
@@ -495,7 +443,7 @@ def sync_once() -> None:
             if _upload_plugins():
                 next_state[pkey] = list(psig)
         # 失败保旧 state 下轮重试
-    # ★2026-08-08 skills/ user-installed 目录 sync(路线 B 精准,基于 .hub/lock.json)
+    # ★2026-08-09 skills/ 整目录 sync(装=存,含 bundled;bundled 飘移复推无害,详见 _upload_skills)
     ssig = _skills_local_sig()
     if ssig is not None:
         skey = "_skills_dir_sig"
