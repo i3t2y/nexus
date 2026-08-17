@@ -1,0 +1,61 @@
+name: Deploy to HF Space
+
+on:
+  # Manual trigger from GitHub Web UI or gh workflow run
+  workflow_dispatch:
+  # Auto-deploy on push to main (comment out both lines below for manual-only)
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+          # Clone HF Space repo
+          git clone https://user:${HF_TOKEN}@huggingface.co/spaces/${{ secrets.HF_SPACE_PATH }} hf-space || {
+            echo "ERROR: HF Space not found. Create it first at https://huggingface.co/new-space"
+            exit 1
+          }
+          
+          # Copy deployment files (exclude .github/ and docs/)
+          cp Dockerfile README.md start.sh hf-space/
+          
+          # Clean stale files from previous deployments
+          # (cp only overwrites; it doesn't delete files that no longer exist in GitHub)
+          cd hf-space
+          for f in $(ls -A | grep -v '^\.git$' | grep -v 'Dockerfile' | grep -v 'README.md' | grep -v 'start.sh' | grep -v '^\.gitattributes$'); do
+            rm -rf "$f"
+          done
+          
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes, skipping push"
+            exit 0
+          fi
+          
+          # Push to HF Space
+          git commit -m "Deploy from GitHub: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          git push origin main
+          
+          echo "=== Deployed to HF Space ==="
+          echo "Space URL: https://huggingface.co/spaces/${{ secrets.HF_SPACE_PATH }}"
+
+# Required GitHub Secrets:
+#   HF_TOKEN       - HuggingFace access token with write access to the Space
+#   HF_SPACE_PATH  - e.g., username/space-name
+#
+# To switch to tag-only deploy:
+#   Comment out the 'push:' block above, uncomment below:
+#   # on:
+#   #   workflow_dispatch:
+#   #   push:
+#   #     tags: ['v*']
