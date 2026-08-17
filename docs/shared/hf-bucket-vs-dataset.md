@@ -69,13 +69,13 @@ info = api.bucket_info("nmem/logic")
 
 # CRITICAL: Mount bucket as Space volume (triggers Space restart)
 api.set_space_volumes(
-    "nmem/memlg",
+    "nmem/memgraph",
     volumes=[Volume(type="bucket", source="nmem/logic", mount_path="/data")]
 )
 # → Space auto-restarts with new volume mount (~30s downtime)
 
 # Remove all volumes from a Space
-api.delete_space_volumes("nmem/memlg")  # also restarts
+api.delete_space_volumes("nmem/memgraph")  # also restarts
 
 # Inspect existing volumes
 runtime = api.get_space_runtime("sonoke/h")
@@ -127,11 +127,11 @@ The nexus repo (`i3t2y/nexus`) did a 7-dimension persistence audit comparing its
 
 ## Practical Pattern for Multi-Space Deployments
 
-When deploying services across multiple HF Spaces (e.g., hermes on `sonoke/h`, mem0+worker on `nmem/memlg`):
+When deploying services across multiple HF Spaces (e.g., hermes on `sonoke/h`, mem0+worker on `nmem/memgraph`):
 
 | Space | Volume | Why |
 |---|---|---|
 | hermes (`sonoke/h`) | Bucket `sonoke/logic` rw `/data` | Logic layer rw + state.db WAL-safe snapshots |
-| worker (`nmem/memlg`) | Bucket `nmem/logic` rw `/data` (new) | Worker code hot-reload via `hf buckets sync` (replaces `snapshot_download` of Dataset) |
+| worker (`nmem/memgraph`) | Bucket `nmem/logic` rw `/data` (new) | Worker code hot-reload via `hf buckets sync` (replaces `snapshot_download` of Dataset) |
 
 Three-file budget (Dockerfile + README.md + start.sh) stays in HF Space git repo, frozen — never bucketed. Bucket only holds logic layer (`nworker/`) and runtime state. This separation ensures changing logic never triggers Docker rebuild.

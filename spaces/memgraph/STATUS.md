@@ -1,14 +1,14 @@
-# memlg Space — 三件套之一
+# memgraph Space — 三件套之一
 
 ## 定位
-- **HF Space**: `nmem/memlg` (public, Docker SDK, port 7860)
+- **HF Space**: `nmem/memgraph` (public, Docker SDK, port 7860)
 - **职能**: Mem0 server (记忆层) + LangGraph worker (编排)
 - **后端**: Neon Postgres (pgvector, AWS us-east-1)
 - **保活**: cron-job.org 每 4min ping `/health`
 
 ## 三件套
 1. Hermes (sonoke/h) — 入口/路由/调度 (云上大脑)
-2. memlg (nmem/memlg) — 记忆+编排 (本目录)
+2. memgraph (nmem/memgraph) — 记忆+编排 (本目录)
 3. Neon — 数据持久化
 
 ## 文件结构
@@ -28,5 +28,5 @@
 GitHub i3t2y/nexus (版本化真源)
   → Actions (push 触发)
   → hf buckets sync nworker/ → nmem/logic Bucket
-  → memlg Space start.sh: hf buckets sync 拉 → /app/worker
+  → memgraph Space start.sh: hf buckets sync 拉 → /app/worker
 ```

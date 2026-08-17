@@ -167,5 +167,5 @@ For mem0 + Neon: use cron-job.org → `/health` every 4 min (simpler, no daemon 
 ## Source Repos
 
 - `i3t2y/n-omn` — OmniRoute perpetual node (Node.js, litestream+R2, multi-process entrypoint with trap/SIGTERM)
-- `i3t2y/nexus` — Hermes Agent space + triad (hermes + memlg + langgraph); `spaces/memlg/` contains mem0 server's three files + nworker logic layer, version-controlled alongside hermes scripts
-- `i3t2y/n-memlg` — mem0 server deployment (public, original standalone repo; now merged into nexus `spaces/memlg/` for unified version control)
+- `i3t2y/nexus` — Hermes Agent space + triad (hermes + memgraph + langgraph); `spaces/memgraph/` contains mem0 server's three files + nworker logic layer, version-controlled alongside hermes scripts
+- `i3t2y/n-memgraph` — mem0 server deployment (public, original standalone repo; now merged into nexus `spaces/memgraph/` for unified version control)

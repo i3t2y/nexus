@@ -106,7 +106,7 @@ The nexus design above was for a **4-Space + R2 + Supabase + Bucket + GHCR** arc
 
 | Nexus designed | Actual deployment | Status |
 |----------------|-------------------|--------|
-| 4 Spaces (hermes/langgraph/claude/codex) | 2 Spaces (hermes on sonoke + mem0/LangGraph on nmem/memlg) | 3 Spaces cut |
+| 4 Spaces (hermes/langgraph/claude/codex) | 2 Spaces (hermes on sonoke + mem0/LangGraph on nmem/memgraph) | 3 Spaces cut |
 | R2 for large files | No R2 | Dropped |
 | Supabase for structured state | Neon Postgres | Replaced |
 | HF Storage Bucket rw mount | **✅ Active** — `/data` is `hf-mount` FUSE rw mount (`sonoke/logic` bucket) | In use |
@@ -142,4 +142,4 @@ The user clarified the final positioning: **三件套 = 云上大脑, 用来统�
   本机脚本)
 ```
 
-**nexus概念不变, 只换基础设施工具**: R2→砍, Supabase→换Neon, GHCR→砍, 4Space→2Space。核心概念(hermes做入口/路由/调度+统一记忆层+逻辑层与镜像分离+永续铁律+HF rebuild付费墙规避)全部保留。Bucket vs Dataset选择按Space需求分: hermes Space用Bucket(rw挂载+state.db快照), memlg Space用Dataset(boot拉取逻辑层)。两个选择都对。
+**nexus概念不变, 只换基础设施工具**: R2→砍, Supabase→换Neon, GHCR→砍, 4Space→2Space。核心概念(hermes做入口/路由/调度+统一记忆层+逻辑层与镜像分离+永续铁律+HF rebuild付费墙规避)全部保留。Bucket vs Dataset选择按Space需求分: hermes Space用Bucket(rw挂载+state.db快照), memgraph Space用Dataset(boot拉取逻辑层)。两个选择都对。

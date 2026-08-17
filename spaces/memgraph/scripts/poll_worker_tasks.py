@@ -20,7 +20,7 @@ for line in env.splitlines():
         k, v = line.split('=', 1)
         os.environ.setdefault(k.strip(), v.strip())
 
-WORKER_URL = os.environ.get("WORKER_URL", "https://nmem-memlg.hf.space")
+WORKER_URL = os.environ.get("WORKER_URL", "https://nmem-memgraph.hf.space")
 WORKER_API_KEY = os.environ.get("WORKER_API_KEY", os.environ.get("MEM0_API_KEY", ""))
 
 try:

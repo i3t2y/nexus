@@ -17,7 +17,7 @@ i3t2y/nexus/                        # GitHub private repo (version control)
 │   │   ├── start.sh                # frozen three files
 │   │   ├── scripts/                # hermes persistence scripts
 │   │   └── ...
-│   ├── memlg/                      # mem0+lg Space (nmem/memlg)
+│   ├── memgraph/                      # mem0+lg Space (nmem/memgraph)
 │   │   ├── Dockerfile              # frozen three files
 │   │   ├── README.md               # HF frontmatter
 │   │   ├── start.sh                # thin bootstrap (Dataset or Bucket pull)
@@ -37,10 +37,10 @@ i3t2y/nexus/                        # GitHub private repo (version control)
 ## Unified Bucket Deployment Chain
 
 ```
-GitHub push (i3t2y/nexus/spaces/memlg/nworker/)
+GitHub push (i3t2y/nexus/spaces/memgraph/nworker/)
   → GitHub Actions trigger
-  → hf buckets sync ./spaces/memlg/nworker hf://buckets/nmem/logic/nworker
-  → memlg Space restart (not rebuild)
+  → hf buckets sync ./spaces/memgraph/nworker hf://buckets/nmem/logic/nworker
+  → memgraph Space restart (not rebuild)
   → start.sh: hf buckets sync hf://buckets/nmem/logic/nworker /app/worker
   → entrypoint.sh runs patched code
 ```
@@ -85,14 +85,14 @@ Organize `docs/` using the same Space-name pattern as `spaces/`:
 ```
 docs/
 ├── hermes/          # sonoke/h Space docs (persistence, deploy, hot-reload)
-├── memlg/           # nmem/memlg Space docs (mem0 auth/config, worker, keepalive)
+├── memgraph/           # nmem/memgraph Space docs (mem0 auth/config, worker, keepalive)
 ├── shared/          # cross-Space docs (architecture, credentials, Bucket-vs-Dataset, PAT)
 └── archive/         # outdated/legacy docs (old Nexus multi-Space designs, prior framework versions)
 ```
 
 **Classification rule**: A document belongs in `<space>/` if it's specific to that Space's deployment. It belongs in `shared/` if it covers cross-cutting concerns (HF API, token management, storage comparison, architecture overview). Everything outdated goes to `archive/` — never delete (git history preserves, but archive signals "don't rely on this for current architecture").
 
-**Skill references migration**: When a skill's `references/` directory contains documents relevant to a Space, copy them into the nexus repo's `docs/<space>/` as well. The skill references stay in place for runtime use; the nexus repo copies serve as version-controlled backup. Example: `mem0-server-auth.md` → both `skill/references/mem0-server-auth.md` AND `nexus/docs/memlg/mem0-server-auth.md`.
+**Skill references migration**: When a skill's `references/` directory contains documents relevant to a Space, copy them into the nexus repo's `docs/<space>/` as well. The skill references stay in place for runtime use; the nexus repo copies serve as version-controlled backup. Example: `mem0-server-auth.md` → both `skill/references/mem0-server-auth.md` AND `nexus/docs/memgraph/mem0-server-auth.md`.
 
 ## Bucket Python API (Verified 2026-08-17)
 
@@ -113,17 +113,17 @@ buckets = api.list_buckets()
 
 # 3. Mount Bucket to Space as rw Volume (triggers Space restart ~30s)
 api.set_space_volumes(
-    "nmem/memlg",
+    "nmem/memgraph",
     volumes=[Volume(type="bucket", source="nmem/logic", mount_path="/data")]
 )
 # → Space enters RUNNING_BUILDING, returns to RUNNING in ~30s
 
 # 4. Verify volume mount
-info = api.space_info("nmem/memlg")
+info = api.space_info("nmem/memgraph")
 # info.runtime.volumes → [Volume(type='bucket', source='nmem/logic', mount_path='/data', read_only=False)]
 
 # 5. Check current Space volumes (None = no volume mounted)
-info = api.space_info("nmem/memlg")
+info = api.space_info("nmem/memgraph")
 # info.runtime.volumes → None means no Bucket mounted
 ```
 

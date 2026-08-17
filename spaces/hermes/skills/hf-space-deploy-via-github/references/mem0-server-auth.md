@@ -59,7 +59,7 @@ Sources: Medium "Deploying FastAPI on HF Spaces — Handling All Its Restriction
 hermes `SelfHostedBackend` (`_backend.py` L83–155) uses `httpx.Client` with:
 - `X-API-Key` header if `api_key` is provided (omitted for AUTH_DISABLED servers)
 - Does NOT send `Authorization: Bearer` — avoids HF proxy Bearer/JWT conflict
-- Base URL = Space URL (e.g., `https://nmem-memlg.hf.space`)
+- Base URL = Space URL (e.g., `https://nmem-memgraph.hf.space`)
 - Routes: `POST /memories`, `POST /search`, `GET /memories`, `PUT/DELETE /memories/{id}`
 
 `mem0.json` config for self-hosted:
@@ -81,7 +81,7 @@ Router priority in hermes `__init__.py`: `oss > host > platform`. If `oss` confi
 
 ### Verification Results (2026-08-16)
 
-After switching to ADMIN_API_KEY on `nmem/memlg` (public Space):
+After switching to ADMIN_API_KEY on `nmem/memgraph` (public Space):
 
 | Test | Result | Expected |
 |---|---|---|
@@ -94,7 +94,7 @@ After switching to ADMIN_API_KEY on `nmem/memlg` (public Space):
 **Full architecture verified:**
 ```
 hermes (SelfHostedBackend + X-API-Key header)
-  → https://nmem-memlg.hf.space (public HF Space)
+  → https://nmem-memgraph.hf.space (public HF Space)
   → ADMIN_API_KEY match (mem0 verify_auth branch 2)
   → NIM embedder 2048-dim
   → Neon Postgres pgvector (neondb)

@@ -8,21 +8,21 @@
 #   HF_C_TOKEN   → sonoke/c       (codex 执行器)
 #   HF_M_TOKEN   → nmem/memlg     (mem0 后端, 本 workflow)
 #
-# 触发: 手动 workflow_dispatch 或 push 涉 spaces/memlg/** 变更。
+# 触发: 手动 workflow_dispatch 或 push 涉 spaces/memgraph/** 变更。
 # 前提: GitHub Secret HF_M_TOKEN = nmem 账号 HF token (对 nmem/memlg Space 写权限)
 #       HF Bucket nmem/logic 已创建且已挂载到 Space /data
-name: Sync memlg → HF Space + Bucket
+name: Sync memgraph → HF Space + Bucket
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - "spaces/memlg/**"
-      - ".github/workflows/deploy-memlg.yml"
+      - "spaces/memgraph/**"
+      - ".github/workflows/deploy-memgraph.yml"
 
 jobs:
-  deploy-memlg:
+  deploy-memgraph:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout nexus 源仓
@@ -49,7 +49,7 @@ jobs:
       - name: 拷贝三文件 → HF repo 根
         run: |
           set -e
-          src="spaces/memlg"
+          src="spaces/memgraph"
           dst="hf-space"
           for f in Dockerfile README.md start.sh; do
             cp "${src}/${f}" "${dst}/${f}"
@@ -66,7 +66,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "[sync] 三文件无变更, 跳过 push"
           else
-            git commit -m "sync memlg 三文件 (触发 rebuild)"
+            git commit -m "sync memgraph 三文件 (触发 rebuild)"
             git push "https://user:${HF_M_TOKEN}@huggingface.co/spaces/nmem/memlg" main
             echo "::notice::已 push 三文件到 nmem/memlg, HF 自动触发 rebuild"
           fi
@@ -75,5 +75,5 @@ jobs:
         env:
           HF_M_TOKEN: ${{ secrets.HF_M_TOKEN }}
         run: |
-          hf buckets sync ./spaces/memlg/nworker hf://buckets/nmem/logic/nworker
+          hf buckets sync ./spaces/memgraph/nworker hf://buckets/nmem/logic/nworker
           echo "::notice::nworker 已同步到 nmem/logic Bucket"

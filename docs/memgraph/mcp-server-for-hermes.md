@@ -119,7 +119,7 @@ See `/opt/data/.hermes/mcp/nexus_worker_mcp.py` for a production MCP server that
 - `worker_health()` — GET `/worker/health`
 
 Environment variables:
-- `WORKER_URL` — HF Space URL (e.g., `https://nmem-memlg.hf.space`)
+- `WORKER_URL` — HF Space URL (e.g., `https://nmem-memgraph.hf.space`)
 - `WORKER_API_KEY` — ADMIN_API_KEY value (same as `MEM0_API_KEY` in `.env`)
 
 Registered as:
@@ -127,7 +127,7 @@ Registered as:
 hermes mcp add nexus-worker \
   --command python3 \
   --args /opt/data/.hermes/mcp/nexus_worker_mcp.py \
-  --env WORKER_URL=https://nmem-memlg.hf.space \
+  --env WORKER_URL=https://nmem-memgraph.hf.space \
   --env WORKER_API_KEY=<MEM0_API_KEY value>
 ```
 

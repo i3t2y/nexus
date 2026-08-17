@@ -9,7 +9,7 @@
 |---|---|---|
 | `HF_TOKEN` | nmem 账号 HF token (push to Space + Dataset) | ✅ |
 
-## HF Space Secrets (`nmem/memlg`)
+## HF Space Secrets (`nmem/memgraph`)
 
 | Key | 说明 | 已配 |
 |---|---|---|
@@ -45,12 +45,12 @@
 ## hermes 后台
 
 - mem0 mode: Self-hosted server
-- Host: `https://nmem-memlg.hf.space`
+- Host: `https://nmem-memgraph.hf.space`
 - API Key: `ADMIN_API_KEY` 的值
 
 ## cron-job.org (待建)
 
-- URL: `https://nmem-memlg.hf.space/health`
+- URL: `https://nmem-memgraph.hf.space/health`
 - 频率: 每 4 分钟
 - Method: GET
 - 无需 auth header

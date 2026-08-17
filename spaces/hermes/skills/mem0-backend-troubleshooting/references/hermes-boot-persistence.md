@@ -41,7 +41,7 @@ Key behaviors:
 ## Why self_hosted mem0.json Gets Lost on Restart
 
 1. `/opt/data` is ephemeral — HF Space restart wipes it.
-2. We manually edit `/opt/data/.hermes/mem0.json` → `mode: self_hosted` + `host: https://nmem-memlg.hf.space`.
+2. We manually edit `/opt/data/.hermes/mem0.json` → `mode: self_hosted` + `host: https://nmem-memgraph.hf.space`.
 3. On restart: `/opt/data` wiped → `mem0.json` gone.
 4. `real-start.sh` step 1 restores home files from Bucket, but **mem0.json is NOT in the restore list** (only .env, SOUL.md, MEMORY.md, USER.md, config.yaml, plugins/, skills/).
 5. `real-start.sh` step 4: `mem0.json` doesn't exist → generates from template → `mode: oss` + Supabase.
@@ -134,7 +134,7 @@ Read directly from `i3t2y/nexus` repo `docs/ARCHITECTURE.md` (2026-08-16 session
 
 ### User's strategic conclusion (2026-08-16 session)
 
-After reviewing nexus's full architecture, the user concluded: **nexus方案已过时** — the multi-Space + R2 + Supabase + Bucket + GHCR design was for a 4-Space orchestration system, but the actual deployment is 2 Spaces (hermes on sonoke + mem0/LangGraph on nmem/memlg) with Neon. None of nexus's core components are in use. The only "legacy" is hermes's built-in `restore_home_files.py` / `home_files_uploader.py` — but those are part of the hermes Docker image, not nexus additions. The mem0.json persistence gap is a hermes-native issue, not a nexus issue.
+After reviewing nexus's full architecture, the user concluded: **nexus方案已过时** — the multi-Space + R2 + Supabase + Bucket + GHCR design was for a 4-Space orchestration system, but the actual deployment is 2 Spaces (hermes on sonoke + mem0/LangGraph on nmem/memgraph) with Neon. None of nexus's core components are in use. The only "legacy" is hermes's built-in `restore_home_files.py` / `home_files_uploader.py` — but those are part of the hermes Docker image, not nexus additions. The mem0.json persistence gap is a hermes-native issue, not a nexus issue.
 
 ## Fix Options (confirmed options, not yet implemented)
 
@@ -145,7 +145,7 @@ Add `"mem0.json"` to the `_FILES` list in both `restore_home_files.py` and `home
 **Cons**: Modifies hermes infrastructure scripts — may conflict on hermes upgrade. Any future config file has the same problem.
 
 ### Option B (template): Update mem0.json.template to support self_hosted
-Change the template from hardcoded `mode: oss` to read `${MEM0_MODE}`, `${MEM0_HOST}`, `${MEM0_API_KEY}` placeholders. Set HF Secrets `MEM0_MODE=self_hosted`, `MEM0_HOST=https://nmem-memlg.hf.space`, `MEM0_API_KEY=<key>`. The `real-start.sh` envsubst already handles `${VAR}` substitution.
+Change the template from hardcoded `mode: oss` to read `${MEM0_MODE}`, `${MEM0_HOST}`, `${MEM0_API_KEY}` placeholders. Set HF Secrets `MEM0_MODE=self_hosted`, `MEM0_HOST=https://nmem-memgraph.hf.space`, `MEM0_API_KEY=<key>`. The `real-start.sh` envsubst already handles `${VAR}` substitution.
 
 **Pros**: No change to uploader/restore scripts. Template + Secrets = correct config on every boot. This is the community-recommended pattern ( configs go in Secrets + template generation, not in persistent files).
 **Cons**: Need to modify `mem0.json.template` (in Bucket `scripts/`). Need `MEM0_MODE=self_hosted` as a Secret, but `real-start.sh` L152 gates on `MEM0_MODE=oss` — the gate logic needs a minor update to accept `self_hosted` too.
@@ -157,7 +157,7 @@ Replace the per-file `_FILES` list approach with HermesFace-style whole-`/opt/da
 **Cons**: Major architectural change. Uploads transient files (logs, caches). Conflicts with nexus's ext4-vs-FUSE SQLite corruption fix rationale. Would need to replace 4 Python scripts with 1.
 
 ### Option D (env-var via .env): self_hosted config via .env restore
-`mem0.json.template` uses `${VAR}` placeholders. Set `MEM0_MODE=self_hosted`, `MEM0_HOST=https://nmem-memlg.hf.space`, `MEM0_API_KEY=...` as HF Secrets. The `.env` file (which IS in the restore list) could carry these, but `real-start.sh` reads HF Secrets as env vars before `.env` is restored — so HF Secrets directly setting the env vars would work without `.env` involvement.
+`mem0.json.template` uses `${VAR}` placeholders. Set `MEM0_MODE=self_hosted`, `MEM0_HOST=https://nmem-memgraph.hf.space`, `MEM0_API_KEY=...` as HF Secrets. The `.env` file (which IS in the restore list) could carry these, but `real-start.sh` reads HF Secrets as env vars before `.env` is restored — so HF Secrets directly setting the env vars would work without `.env` involvement.
 
 **Pros**: No script changes. `.env` restore already works. HF Secrets are the source of truth.
 **Cons**: Template must be updated to support `self_hosted` placeholders. The `MEM0_MODE=oss` gate in `real-start.sh` L152 must be widened.
@@ -207,7 +207,7 @@ return PlatformBackend(self._api_key)
 
 | Secret | Value | Already exists? |
 |--------|-------|-----------------|
-| `MEM0_HOST` | `https://nmem-memlg.hf.space` | ❌ Add this |
+| `MEM0_HOST` | `https://nmem-memgraph.hf.space` | ❌ Add this |
 | `MEM0_API_KEY` | `<ADMIN_API_KEY value>` | ✅ Already in .env |
 | `MEM0_MODE` | **Don't set** (default "platform" works — the `_host` check is independent of mode) | — |
 
@@ -223,9 +223,9 @@ return PlatformBackend(self._api_key)
 5. hermes starts → mem0 plugin _load_config():
    - mode = env "MEM0_MODE" → "platform" (default)
    - api_key = env "MEM0_API_KEY" → "gZixCw..."
-   - host = env "MEM0_HOST" → "https://nmem-memlg.hf.space"
+   - host = env "MEM0_HOST" → "https://nmem-memgraph.hf.space"
 6. _create_backend(): mode != oss, host is set → SelfHostedBackend(api_key, host)
-7. ✅ Connects to mem0 server on nmem/memlg HF Space
+7. ✅ Connects to mem0 server on nmem/memgraph HF Space
 ```
 
 ### Why this is better than all other options
@@ -261,7 +261,7 @@ print('MEM0_MODE:', os.environ.get('MEM0_MODE', 'NOT SET (default=platform)'))
 # Expected: MEM0_HOST set, MEM0_API_KEY set, MEM0_MODE not set
 
 # Verify mem0 server is reachable
-curl -s https://nmem-memlg.hf.space/health
+curl -s https://nmem-memgraph.hf.space/health
 # Expected: {"status":"ok","db":"connected"}
 ```
 

@@ -18,7 +18,7 @@ GET /memories   → {"results":[{"memory":"User likes pizza","user_id":"test-001
 5. patch 30: `DROP TABLE memories CASCADE` — old table created with 1536 dims, `CREATE TABLE IF NOT EXISTS` won't rebuild it
 6. patch 30: `DELETE FROM settings WHERE key='config_overrides'` — clear stale DB overrides that strip `openai_base_url` (Issue #4910)
 
-**Keepalive**: cron-job.org → GET `https://nmem-memlg.hf.space/health` every 4 min → mem0 server queries Neon → all three services stay alive.
+**Keepalive**: cron-job.org → GET `https://nmem-memgraph.hf.space/health` every 4 min → mem0 server queries Neon → all three services stay alive.
 
 **Auth**: Admin API key (`ADMIN_API_KEY` HF Secret) + `AUTH_DISABLED` removed entirely. hermes `SelfHostedBackend` sends `X-API-Key` header → `verify_auth` branch 2 → admin. `/health` bypasses auth (cron unaffected). Anonymous → 401. See `references/mem0-server-auth.md` § Verification Results for the full test matrix.
 

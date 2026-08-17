@@ -129,8 +129,8 @@ else:                           → PlatformBackend
 5. ✅ connects to self-hosted mem0 server — no mem0.json file needed
 
 **HF Secrets required (sonoke/h Space):**
-- `MEM0_HOST` = `https://nmem-memlg.hf.space` (mem0 server URL)
-- `MEM0_API_KEY` = worker API key (same value as `ADMIN_API_KEY` on memlg Space)
+- `MEM0_HOST` = `https://nmem-memgraph.hf.space` (mem0 server URL)
+- `MEM0_API_KEY` = worker API key (same value as `ADMIN_API_KEY` on memgraph Space)
 - Do NOT set `MEM0_MODE` (leave default `platform`)
 - Do NOT set `MEM0_OSS_*` vars (not used in this path)
 

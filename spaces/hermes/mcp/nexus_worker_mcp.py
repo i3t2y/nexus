@@ -7,7 +7,7 @@ hermes 通过 MCP 调用此工具, 将多步任务 POST 到 LangGraph worker /wo
 
 部署: hermes mcp add nexus-worker --command python3 --args /opt/data/.hermes/mcp/nexus_worker_mcp.py
 环境变量:
-  WORKER_URL    — HF Space URL (默认 https://nmem-memlg.hf.space)
+  WORKER_URL    — HF Space URL (默认 https://nmem-memgraph.hf.space)
   WORKER_API_KEY — ADMIN_API_KEY 值
 """
 
@@ -16,7 +16,7 @@ import sys
 import json
 import requests
 
-WORKER_URL = os.environ.get("WORKER_URL", "https://nmem-memlg.hf.space")
+WORKER_URL = os.environ.get("WORKER_URL", "https://nmem-memgraph.hf.space")
 WORKER_API_KEY = os.environ.get("WORKER_API_KEY", os.environ.get("MEM0_API_KEY", ""))
 
 

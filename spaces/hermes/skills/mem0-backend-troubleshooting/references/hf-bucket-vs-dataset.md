@@ -49,7 +49,7 @@ hermes Space (sonoke) — Bucket:
   └── docs/
   Bucket名: sonoke/logic, env: NEXUS_LOGIC_BUCKET=logic, HF_OWNER=sonoke
 
-memlg Space (nmem) — Dataset:
+memgraph Space (nmem) — Dataset:
   snapshot_download(nmem/nworker) → /app/worker (boot时拉取逻辑层)
   三文件冻结 + Dataset拉逻辑层 = 最简
   不需要运行时rw, 只读拉取够用
@@ -57,7 +57,7 @@ memlg Space (nmem) — Dataset:
 
 **两个选择都对**:
 - hermes Space需要runtime rw (改逻辑不git push HF repo) → Bucket
-- memlg Space只需boot拉取 → Dataset
+- memgraph Space只需boot拉取 → Dataset
 
 ## 5. HF旧persistent storage正在弃用 (非Bucket)
 
