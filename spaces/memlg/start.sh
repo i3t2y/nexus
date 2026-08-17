@@ -22,59 +22,34 @@ if [ "$_need_install" = "1" ]; then
   echo "[start] 环境补全完成"
 fi
 
-# ── 2. 拉取逻辑层 (竞速根治: 先锁 Dataset HEAD commit_id 再按 revision 拉) ──
-# 防止 boot vs dataset push 竞速拉到旧版 (参考 n-omn start.sh)
-echo "[start] 拉取逻辑层: nmem/nworker"
+# ── 2. 拉取逻辑层 (从 HF Bucket nmem/logic 拉取, Python API 无需 hf CLI) ──
+# 三件套统一 Bucket: 版本化走 GitHub→Actions→Bucket, 运行时 Bucket sync 拉取
+echo "[start] 拉取逻辑层: sync_bucket nmem/logic/nworker → /app/worker"
 mkdir -p /app/worker
 
-_rev=""
-_rev_err=/tmp/.rev.err; : > "$_rev_err"
-_rev=$(python3 -c '
-import os, sys
-try:
-    from huggingface_hub import HfApi
-    token = os.environ.get("HF_TOKEN", "")
-    api = HfApi(token=token if token else None)
-    commits = list(api.list_repo_commits("nmem/nworker", repo_type="dataset"))
-    print(commits[0].commit_id)
-except Exception:
-    pass  # fail-open, 走 main HEAD
-' 2>"$_rev_err") || true
-
-if [ -n "$_rev" ]; then
-  echo "[start] Dataset HEAD 锁定 revision=$(printf %.12s "$_rev") (竞速根治)"
-else
-  echo "[start] WARN: 取 HEAD commit_id 失败, 回退 main HEAD"
-  [ -s "$_rev_err" ] && cat "$_rev_err" >&2
-fi
-
-# hf CLI 或 snapshot_download 拉取
-_err=/tmp/.dl.err; : > "$_err"
+_err=/tmp/.sync.err; : > "$_err"
 python3 -c "
 import os, sys
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi
 token = os.environ.get('HF_TOKEN', '')
-rev = '$(echo $_rev | head -c 4096)' or None
+api = HfApi(token=token if token else None)
 try:
-    snapshot_download(
-        'nmem/nworker',
-        repo_type='dataset',
-        local_dir='/app/worker',
-        token=token if token else None,
-        revision=rev,
+    api.sync_bucket(
+        source='hf://buckets/nmem/logic/nworker',
+        dest='/app/worker',
+        delete=True,
     )
-    print('Runtime code pulled to /app/worker')
+    print('逻辑层已同步到 /app/worker')
 except Exception as e:
     print(f'FATAL: {e}', file=sys.stderr)
     sys.exit(1)
 " 2>"$_err" || {
-  # 脱敏后打印错误
   if [ -n "$HF_TOKEN" ]; then
     sed "s/$HF_TOKEN/[REDACTED]/g" "$_err" >&2
   else
     cat "$_err" >&2
   fi
-  echo "[start] FATAL: Dataset 拉取失败"
+  echo "[start] FATAL: Bucket sync 失败"
   exit 1
 }
 
