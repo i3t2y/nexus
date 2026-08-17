@@ -1,0 +1,9 @@
+name: nexus-r2
+version: 0.1.0
+description: "Nexus R2 dashboard tab + 三 downstream bridge tools(call_claude / call_codex / route_langgraph)。Hermes Agent(NousResearch)内核换装后,agent 智能决策调这三 tool 桥到现役 call_space 调下游 claude-code/codex/langgraph Space。kind: backend 自动加载免 plugins.enabled opt-in(platform_toolsets 仍须显式列才透传到平台)。"
+author: i3t2y
+kind: backend
+provides_tools:
+  - nexus_call_claude
+  - nexus_call_codex
+  - nexus_route_langgraph

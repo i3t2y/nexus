@@ -1,0 +1,5 @@
+/* nexus-ops Downstream/Ops tab 样式 */
+.nexus-ops h2 { margin-top: 0; }
+.nexus-ops button { margin-right: 4px; }
+.nexus-ops table { width: 100%; }
+.nexus-ops td { vertical-align: top; word-break: break-all; }

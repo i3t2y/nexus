@@ -1,0 +1,90 @@
+# Nexus GHCR base 镜像依赖(四 Space 超集)
+# 此文件随 docker/nexus-base.Dockerfile 用,本地 build 推 ghcr.io/<owner>/nexus-base:stable
+# 升级依赖: 改本文件 → 本地 docker build/push 覆盖 :stable → 改 HF repo README 一字符 git push(用户手动触发 1 次 rebuild)
+# pin 版本对齐各 Space 现有 requirements.txt
+
+# === hermes + claude-code + codex 共用 ===
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+gradio==5.9.1
+httpx==0.28.1
+supabase==2.31.0
+# ↑ 2.13.0→2.31.0:2.13.0 SyncClient.__init__ JWT 正则校验拒收 Supabase 新式 sb_secret_/sb_publishable_ key
+#   (非 JWT 无点)→create_client() 当场抛 SupabaseException("Invalid API key"),HTTP 没发。
+#   v2.16.0(PR#1151)删 client.py:62-64 JWT 校验,新 key 直用。HF Secrets 填 sb_secret_ 后 persist/restore/keepalive/storage 全死根因修复。
+boto3==1.36.0
+
+# === langgraph 额外 ===
+langgraph==0.2.74
+langgraph-checkpoint-postgres==2.0.10
+# from_conn_string 硬编码 prepare_threshold=0，6543 transaction pooler 安全（见 libs/shared/checkpointer.py）
+# 显式带 binary 避免 HF Docker 无编译器时纯 Python 路径慢且可能缺 C 扩展
+psycopg[binary]>=3.2.0,<4.0.0
+psycopg-pool>=3.2.0,<4.0.0
+langchain-core==0.3.40
+
+# === Bucket bootstrap fallback(hermes start.sh 挂载兜底拉逻辑用) + state.db 持久层双脚本 ===
+# 升 1.0.1 → 1.26.0:1.0.1 早期 hf CLI 无 `buckets` 子命令(no such command 'buckets'),
+# state_db_uploader.py/restore_state.py 调 `hf buckets cp` CLI 子进程在 1.0.1 容器内必死。
+# github/.../1.26.0 实测 `hf buckets cp` 往返验通(buckets 子命令 rc=0 + cmp 字节一致)。
+# 本地环境 huggingface_hub 1.26.0 全往返验通,exact pin 此版防后期 minor/patch 漂移打破 buckets 路径。
+# 若需锁最新补丁可用 ==1.26.1(未往返验 buckets 风险虽极小)。
+huggingface_hub==1.26.0
+
+# === hermes-agent 核心传递依赖(NousResearch Hermes Agent,editable --no-deps 装)===
+# hermes-agent pyproject 全 exact-pin;editable install 用 --no-deps 防覆盖上面各 Space pin,
+# 故其核心依赖须在此手钉全(否则运行时 import run_agent 崩)。
+# 源:hermes-agent v2026.7.30 pyproject.toml [project] dependencies(core = every session)
+# 剔除:Windows-only marker 包(pywinpty/concurrent-log-handler/pywin32/tzdata win32)、
+#       hermes 传递但现 base 已有(fastapi/uvicorn[standard] 已在上面,版本在 hermes 兼容区间内)
+# 现有 httpx==0.28.1 已同版本,hermes 要 [socks] extra → 显式带 [socks] 补纯 python socksio
+openai==2.24.0
+certifi==2026.5.20
+python-dotenv==1.2.2
+fire==0.7.1
+httpx[socks]==0.28.1
+rich==14.3.3
+tenacity==9.1.4
+pyyaml==6.0.3
+ruamel.yaml==0.18.17
+requests==2.33.0
+jinja2==3.1.6
+pydantic==2.13.4       # hermes 要 2.13.4;fastapi 0.115.6 兼容
+prompt_toolkit==3.0.52
+croniter==6.0.0
+# packaging:hermes core 要 ==26.0,但 langchain-core==0.3.40(line21)钳 <25,>=23.2 相斥。
+# hermes --no-deps 装,其 packaging 约束运行时不强制;packaging 钩子 API(Version/Specifiers)自 14 稳定,
+# 24.x 满足 langchain。松 pin 到 <25 让三包共解(hemes 用 packaging 语法不破)。
+packaging>=23.2,<25
+Markdown==3.10.2
+PyJWT[crypto]==2.13.0  # PYSEC-2026-175/177/178/179
+urllib3>=2.7.0,<3
+cryptography==48.0.1   # CVE-2026-39892/34073;被 PyJWT[crypto] 拉,显式钉防漂
+psutil==7.2.2
+# websockets:hermes core 要 ==15.0.1,但 gradio-client 1.5.1 钳 <15,>=10 相斥。
+# hermes 核心不 import websockets(仅 feishu 插件 adapter.py 用,feishu 已在 disabled/extras 外不装/不启)。
+# hermes_logging.py:155 只把 "websockets" 当 logger 名串进 list,非 import。松到 <15 满足 gradio。
+websockets>=10.0,<15
+pathspec==1.1.1
+python-multipart>=0.0.9,<1   # gradio 拉,但 hermes dashboard 上传路径显式需;显式钉区间
+ptyprocess>=0.7.0,<1   # linux marker(posix)
+# Pillow:hermes 要 ==12.2.0(vision 缩图),但 gradio 5.9.1 钳 pillow<12 相斥。
+# 我们 disabled_toolsets 含 vision/image_generation,hermes Pillow 路径不触发,
+# 放弃 hermes 的 12.2.0 pin,交由 gradio 解析兼容 pillow<12(hermes 缩图代码同 API 仍可跑)
+# Pillow==12.2.0   # 略此 pin,随 gradio 解析
+# === messaging extras 子集(api_server adapter + telegram/discord IM polling)===
+# hermes 把 aiohttp 放 [messaging] extra 而非 core deps,但 api_server adapter
+# 要 aiohttp web server(gateway/platforms/api_server.py:78 `from aiohttp import web`),
+# aiohttp 缺则 api_server adapter 起不成(kernel crash 警告:API Server: aiohttp not installed)。
+# 装 messaging 全 extra 含 slack/matrix/voice 重件(nemo-relay/mautrix/PyNaCl/opuslib)省;
+# 只手钉 nexus 真用子集 = aiohttp + telegram-bot 裸(去 [webhooks] 因用 polling)+
+# discord.py 裸(去 [voice] 因 HF 无麦克风文字 IM)+ brotlicffi(telegram 文件 brotli 解压)。
+# HF 期 IM 通路靠 telegram polling + discord REST/WS;voice/slack/matrix 不用。
+aiohttp==3.14.1            # api_server adapter HTTP server;CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+python-telegram-bot==22.6  # polling 路径用;不带 [webhooks] extra(HF 用 polling 不用 webhook)
+discord.py==2.7.1          # 不带 [voice] extra(HF 无麦克风,文字 IM 不需 PyNaCl/opuslib/ffmpeg)
+brotlicffi==1.2.0.1        # telegram sendPhoto/voice brotli 压缩解;文字 IM 可缺但文件传输需
+
+# nemo-relay:NVIDIA Rust agent runtime binding(linux x86_64/aarch64),非 omniroute 路由。
+# hermes core dep;base 装 --no-deps 须手钉。platform marker 保 linux x86_64(HF amd64)
+nemo-relay>=0.6.0,<0.7; sys_platform == 'linux' and platform_machine == 'x86_64'

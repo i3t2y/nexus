@@ -1,0 +1,5 @@
+/* nexus-r2 R2 Files tab 极简样式 */
+.nexus-r2 h2 { margin-top: 0; }
+.nexus-r2 textarea { font-family: monospace; width: 100%; max-width: 100%; }
+.nexus-r2 ul { list-style: none; padding-left: 0; }
+.nexus-r2 li { padding: 2px 0; }

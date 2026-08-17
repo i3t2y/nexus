@@ -1,0 +1,220 @@
+# Nexus Hermes Agent config 模板(K 形态,2026-08-02)
+# start.sh boot 首启从本模板生成 $HERMES_HOME/config.yaml(不覆盖既有)。
+# 全原生三组件:gateway(含 api_server adapter 同 loop)+ dashboard(in-proc daemon thread --port 7860)
+#               + 两 plugin tab(nexus-r2 R2 文件 / nexus-ops 下游+业务表)。
+#
+# 关键闸门:
+#   - model 段(provider=custom,官方正路,2026-08-02 源码核改):
+#     omniroute = 第三方 OpenAI 兼容端点 → hermes 原生 `custom` provider
+#     (cli-config.yaml.example L99 逐字 "Any other OpenAI-compatible endpoint.
+#     Set base_url below",别名 ollama/vllm/llamacpp 全映射 custom)。
+#     非原生 `openai` provider — openai 不信誉 base_url 覆盖走官方 api.openai.com → omniroute key 401。
+#     custom 信誉 model.base_url 指 omniroute https://nonoke-omn.hf.space/v1(必带 /v1),
+#     key = OPENAI_API_KEY env(omniroute Bearer key;auth.py:481 custom 进特殊集)。
+#     报错 `No usable credentials found for provider 'zai'. Set GLM_API_KEY,...` = 模型名含 glm/z-ai
+#     前缀 → alias 静态路由(auth.py:1909 glm→zai)→ zai provider 缺 GLM_API_KEY env。
+#     解 = 模型名避开 glm 前缀(用 claude-sonnet-5)+ provider 显式 custom 绕 alias。
+#   - dashboard.basic_auth 段(env 优先):HF 7860 公网绑须 BasicAuthProvider 接管鉴权(原生,
+#     kind: backend 自动加载)。env HERMES_DASHBOARD_BASIC_AUTH_{USERNAME,PASSWORD,SECRET} 缺则
+#     list_providers() 空 → gate SystemExit fail-closed 拒起。配齐 → /login 密码表单。
+#   - API_SERVER_KEY env(≥16 字符)是 api_server adapter 真触发器(非本 yaml,见 .env.example)。
+#   - platform_toolsets top-level 三行:toolset="nexus"(nexus-r2 注册的三下游 bridge tool)
+#     须在此显式列各平台,plugin tool 注册(code import)≠ toolset 启用平台注入。
+#   - plugins.enabled 列两 plugin license(代码 import 许可);dashboard tab 发现靠 manifest.json 不靠此项。
+#   - disabled_toolsets 全局砍无头跑不起的 browser/image_gen/voice/tts。
+#   - database.journal_mode: wal(K-R6:配合 base libsqlite3 ≥3.51.3 防 fresh DB 强 DELETE 致 WAL 静默 off;litestream 弃后 2026-08-05 仍留 WAL=A 方案 state.db 在 /opt/data 本地盘 WAL 正常稳定无旁路进程干扰)。
+
+plugins:
+  enabled:
+    - nexus-r2
+    - nexus-ops
+
+# ── model_catalog.excluded_providers:屏蔽全内置 canonical 商店(picker 只留 omn)──
+# 命中 model_switch.py:2453/2272/2167 三处削 section1-2 + models.dev + canonical
+# cross-check。34 canonical slugs 全列(auth.py PROVIDER_REGISTRY + models.py:1112
+# CANONICAL_PROVIDERS 实证),防未来误加凭证让内置商店露脸。
+# auto/* 非内置 = omn /v1/models 活探产物,关 discover_models 即净(非 excluded 职责)。
+# openrouter 用户拍板同屏蔽。
+# 要用某内置商店:删该 slug + 配对应 *_API_KEY env + Restart。
+model_catalog:
+  excluded_providers:
+    - nous
+    - fireworks
+    - openrouter
+    - moa
+    - novita
+    - lmstudio
+    - anthropic
+    - openai-codex
+    - openai-api
+    - alibaba
+    - xai-oauth
+    - xiaomi
+    - tencent-tokenhub
+    - nvidia
+    - copilot
+    - copilot-acp
+    - huggingface
+    - gemini
+    - vertex
+    - deepseek
+    - xai
+    - zai
+    - kimi-coding
+    - kimi-coding-cn
+    - stepfun
+    - minimax
+    - minimax-oauth
+    - minimax-cn
+    - ollama-cloud
+    - arcee
+    - gmi
+    - kilocode
+    - opencode-zen
+    - opencode-go
+
+# ── providers dict:omn 命名 provider(v12+ 正路)──
+# custom_providers 列表经 config_migrations.py _migrate_to_12 转 providers dict 并删列表,
+# 故直接写 providers dict(省 boot migration)。slug=key omn。
+# 字段集(config.py:1477 _custom_provider_entry_to_provider_config):api/name/api_key 或
+#   key_env/models/context_length/transport/extra_headers/discover_models。
+# ★ provider 引用 "custom:omn" → dashboard 显示「omn」替「Custom endpoint」
+#   (ModelPickerDialog.tsx:548 直渲染后端 row name;bare custom → 硬编码 "Custom endpoint",
+#    model_switch.py:2779;named slug → 显示该 name,model_switch.py:2872-2875)。
+# ★ discover_models: false 关活探 omn /v1/models —— 该端点返 200+ 模型含 auto/* 全灌 picker
+#   (model_switch.py:2678/2845 discover 默认 True → 2696 should_probe=...and discover and...
+#    探 /v1/models)。关后 should_probe 短路,picker 只显下面显式 models 列的。
+#   要加模型:models 块加一行 + Restart(用缓存镜像,不 git push 不触发付费墙)。
+# ★ api_key 显式 ${OPENAI_API_KEY}(2026-08-03 401 修):
+#   runtime_provider.py:1266-1277 host 门控 omn host=nonoke-omn.hf.space 不命中 openai/azure
+#   → OPENAI_API_KEY 候选跳过 → L1302 fallback "no-key-required" → omn 401。
+#   显式 api_key 命中 L1268 cfg_api_key 路径 → 真 key 发 omn。
+# transport=chat_completions(= api_mode)= runtime_provider.py 默认 → OpenAI SDK
+#   chat.completions.create() → {base_url}/chat/completions(omn 协议对齐)。
+# 前提:HF Secrets 须设 OPENAI_API_KEY=omn 真实密钥(401 修复前提)。
+providers:
+  omn:
+    api: https://nonoke-omn.hf.space/v1
+    name: omn
+    api_key: ${OPENAI_API_KEY}
+    transport: chat_completions
+    discover_models: false
+    models:
+      nvidia/z-ai/glm-5.2:
+        context_length: 128000
+
+# ── model 段:provider=custom:omn(替 bare custom)+ default=omn /v1/models raw id──
+# ★ default=nvidia/z-ai/glm-5.2:omn 真 raw id(非 hermes 自造前缀)。裸 glm-5.2 歧义 →
+#   omn 400 要求 provider 前缀(omn aggregator 多 provider 路由)。
+#   hermes chat.completions.create 路径不 strip(chat_completion_helpers.py:3100
+#   model_name=str(agent.model) 直传),整串透传 omn 不改路由。
+# ★ provider=custom:omn:not bare custom。runtime 解析 custom:<slug> 路由进 providers.omn
+#   (test_custom_provider_session_persistence _runtime_model_config 实证 custom:<slug>)。
+# ★ api_key 显式 ${OPENAI_API_KEY}(同 providers.omn,双重保险:runtime 优先 model 段 key)。
+model:
+  default: nvidia/z-ai/glm-5.2
+  provider: custom:omn
+  base_url: https://nonoke-omn.hf.space/v1
+  api_key: ${OPENAI_API_KEY}
+
+# top-level(非 nested):各平台启用的 toolset 列表。
+# hermes-* 是平台自带 toolset; nexus 是 nexus-r2 注册的下游 bridge toolset。
+platform_toolsets:
+  api_server: [hermes-api-server, nexus]
+  telegram:   [hermes-telegram, nexus]
+  discord:    [hermes-discord, nexus]
+
+# 全局禁用 toolset(HF 无头无 sandbox,chromium 起不来 + 触浏览器自动化风控)。
+disabled_toolsets:
+  - browser
+  - image_generation
+  - voice
+  - tts
+
+database:
+  journal_mode: wal   # K-R6:防 fresh DB 强 DELETE 致 WAL 静默 off(配合 base libsqlite3 ≥3.51.3);A 方案后 state.db 在 /opt/data 本地盘,WAL 正常无旁路进程干扰
+
+# ── kanban dispatcher 关闭(永续砍 extras:nexus 无 kanban board)──
+# 默认 dispatch_in_gateway=true → 每 tick 无条件 connect board=default 库
+#   (kanban_watchers.py:1218 _tick_once_for_board)。
+# HF /data/.hermes/kanban.db 首启无 board 库,connect 跑 schema+migration
+#   报 sqlite3.OperationalError: unable to open database file 死循环 traceback 淹日志。
+# notifier_watcher 无订阅时 count_notify_subs 早退(:267)不开库,无害保留。
+# epoxy 关 dispatcher 即消死循环(gateway/run.py:11041 loop 变 no-op)。
+# env 备选:HERMES_KANBAN_DISPATCH_IN_GATEWAY=false(kanban_watchers.py:991)。
+kanban:
+  dispatch_in_gateway: false
+
+# telegram/discord config(平台 adapter 由此起,凭证走 env 非 yaml):
+#   TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN env 注。
+# ★ telegram extra.base_url(2026-08-05 加,K-R7 推翻):hermes 原生 telegram_network.py
+#   DoH+fallback IP 在 HF **IP 段也封**(不只 DNS)→ fallback IP 149.154.166.110 直连仍
+#   ConnectTimeout,DoH 主路死。改 CF Worker 反代绕 HF 出站封禁段。
+#   adapter.py:3714 custom_base_url=self.config.extra.get("base_url") → PTB builder.base_url()
+#   指 CF Worker:bot polling 流量经 Worker→api.telegram.org,不经 HF 封禁 IP。
+#   extra.base_url 必带末尾 /bot(PTB 拼 /bot<TOKEN>/<method> 的 /bot 已含,Worker 路径
+#   匹配 /bot 开头转发);base_file_url 同理 /file/bot。
+#   Worker 鉴权=ALLOWED_TOKENS 白名单(CF Worker env,非 HF Secrets)限仅本 bot token 经此代理,
+#   非 open proxy 避 CF AUP §2.2.1(j) proxy 雷区(tele.nexush.workers.dev)。
+#   双保险:HF Secrets HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true 禁 hermes 原生 fallback IP
+#   (adapter.py:3807),因 IP 封下 fallback 也超时,禁了消 boot 重连死循环。
+#   discord 硬编无 base_url 开关,仅 DISCORD_PROXY env 兜底(HF IP 封同理,暂不解)。
+# ★ telegram extra.base_url(2026-08-06 绑自定义域 K-R7 闭环):
+#   *.workers.dev 的 SNI 在 HF 出口审查设备关键字黑名单 → TLS 握手被 RST(SSL UNEXPECTED_EOF)。
+#   hermes 实测同 CF IP + SNI=cloudflare-dns.com 通 / SNI=*.workers.dev 死 / SNI=api.telegram.org 死
+#   → 独立 IP/路由层,纯属 SNI 关键字过滤(HuggingMes 绑自定义域成 = 它 worker 域 SNI 不黑名单)。
+#   解 = Worker 绑自定义域 tele.nexush.cc.cd(SNI 不在 黑名单 → 握手通)+ PTB custom_base_url 指绑域。
+#   adapter.py:3714 custom_base_url=self.config.extra.get("base_url") → PTB builder.base_url()。
+#   extra.base_url 必带末尾 /bot(PTB 拼 /bot<TOKEN>/<method> 的 /bot 已含,Worker 路径
+#   匹配 /bot 开头转发);base_file_url 同理 /file/bot(Worker 正则兼容 /file/bot<TOKEN>/)。
+#   ★ Worker 侧正则须改 /^\/(?:file\/)?bot([0-9]+:[A-Za-z0-9_-]+)\// 兼容 file 路径(否则 403)。
+#   ★ 生效 config.yaml 已 hermes config set 同步(2026-08-06);本 template 同步防 start.sh cmp 重启回退。
+#   Worker 鉴权=ALLOWED_TOKENS 白名单(CF Worker env)限仅本 bot token 经此代理,
+#   非 open proxy 避 CF AUP §2.2.1(j) proxy 雷区。
+#   双保险:HF Secrets HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true 禁 hermes 原生 fallback IP
+#   (adapter.py:3807),因 SNI 封下 fallback 也超时,禁了消 boot 重连死循环。
+#   discord 硬编无 base_url 开关,仅 DISCORD_PROXY env 兜底(HF SNI 封同理,暂不解)。
+telegram:
+  enabled: true
+  extra:
+    base_url: https://tele.nexush.cc.cd/bot
+    base_file_url: https://tele.nexush.cc.cd/file/bot
+# discord(★2026-08-08 永关):HF 出 SNI 黑名单封 discord 段同 telegram,且 discord
+#   adapter 硬编无 extra.base_url 开关(仅 DISCORD_PROXY env 兜底)→ 无 worker 反代路(不像
+#   telegram 能借 base_url 走 CF Worker)。故 enabled=false 永关,避 boot fail-closed 噪音
+#   + toggle 字面与 runtime 态对齐(不再 enabled=true 但无 token fail=关 的隐性态)。
+#   若未来 HF 出站解封或 discord 加 base_url 开关,改回 true + 补 DISCORD_BOT_TOKEN 即复。
+discord:
+  enabled: false
+
+# ── auxiliary 副任务用主 provider(omn)+ 宽 timeout 容冷启动 ──
+# 2026-08-07 修:title_generation 默认 fallback chain(openrouter→nous→custom→api-key)无
+#   omn 主 provider 明示 → openrouter/nous 无凭据死 + omn 走 step1 但 30s 默认 timeout 容不下
+#   omn(下游 nonoke/omn HF Space 免费 cpu 冷启)首请 → "Title generation failed: Request timed out"。
+#   §[start] state-db upload daemon up 同境 boot 阶 omn 首请慢。
+# 解:auxiliary 段显式指 provider=main(auxiliary_client.py:174 _normalize_aux_provider "main"
+#   resolve to user's actual main provider 含 named custom:omn)→ skip step2 fallback chain 直走 omn。
+#   auxiliary.<task>.timeout(_get_task_timeout auxiliary_client.py:4360 黔 30.0s不容)→抬 90s 容冷启。
+#   影响任务:title_generation(dashboard 会话列表标题)/ compression(长对话压)/ summarize/
+#   vision/web_extract/memory_flush 同理 omn 慢 → 全配 main + 90s。
+# 不影响主聊天(主链 timeout 容忍更长,已实测聊天通)。此段只活 dashboard 副展示 + 长对话压缩体验。
+# 凭证:复用主 omn OPENAI_API_KEY(Secrets 已补);无新 env。
+auxiliary:
+  title_generation:
+    provider: main
+    timeout: 90
+  compression:
+    provider: main
+    timeout: 90
+  summarize:
+    provider: main
+    timeout: 120
+  vision:
+    provider: main
+    timeout: 90
+  web_extract:
+    provider: main
+    timeout: 90
+  memory_flush:
+    provider: main
+    timeout: 90

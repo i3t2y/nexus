@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# H-7.1 本地 docker run 复跑脚本(2026-08-03)。
+# 用法:填下面两真值后 bash run-local.sh。
+# 根因 A 解:DB_CONNECT_TIMEOUT_SECONDS=30 + DSN 去 -pooler(unpooled)给 libpq happy-eyeballs v6 fast-fail 后 v4 窗口。
+#
+# ⚠️ 真值不入 git!本脚本已列 .gitignore 范畴(spaces/honcho/ 下新建)。跑完勿 commit 真值。
+#    DSN 在下面以 shell 变量赋值,跑完改回占位或删本脚本。
+
+set -euo pipefail
+
+# ════════════════════════════════════════════════════════════════════
+# 真值(自填) ─ 真值不 commit,跑完改回占位
+# ════════════════════════════════════════════════════════════════════
+
+# Neon DSN(unpooled 形:去 -pooler 后缀)。
+# 真实模板(自 Neon 控制台取,把 -pooler 删掉):
+#   postgresql+psycopg://USER:PASS@NEON_HOST.example.com/DBNAME?sslmode=require
+# 注:DBNAME 换真库名(Neon 默认 neondb 或自建)。
+DB_DSN='postgresql+psycopg://USER:PASS@HOST/DATABASE?sslmode=require'
+
+# omniroute Bearer key(nonoke/omn HF Space 的 NIM_KEYS 透传 key)
+OMN_KEY='OMN_KEY_PLACEHOLDER'
+
+# ════════════════════════════════════════════════════════════════════
+# 验证填值(勿改下)
+# ════════════════════════════════════════════════════════════════════
+if [[ "$DB_DSN" == *"USER"* ]] || [[ "$DB_DSN" == *"PASS"* ]] || [[ -z "$OMN_KEY" ]]; then
+  echo "❌ 真值未填。编辑本脚本 DB_DSN + OMN_KEY 后重跑。" >&2
+  echo "   DB_DSN 占位检测含 USER/PASS / 实际: ${DB_DSN:0:50}..." >&2
+  echo "   OMN_KEY 长度: ${#OMN_KEY}" >&2
+  exit 1
+fi
+
+echo "=== H-7.1 本地 docker run(根因 A 解:timeout=30 + unpooled)==="
+echo "DSN host: $(echo "$DB_DSN" | sed -E 's|.*@([^/]*)/.*|\1|')"
+echo "DSN db:   $(echo "$DB_DSN" | sed -E 's|.*/([^?]+)\??|\1|')"
+echo "OMN key 长度: ${#OMN_KEY}"
+echo ""
+
+docker run -d --name honcho-local -p 7860:7860 \
+  -e DB_CONNECTION_URI="$DB_DSN" \
+  -e DB_CONNECT_TIMEOUT_SECONDS=30 \
+  \
+  -e LLM_OPENAI_API_KEY="$OMN_KEY" \
+  \
+  -e AUTH_USE_AUTH=true \
+  -e AUTH_JWT_SECRET="6d79f021d9cb1459d1e82d73f14289478886cb09d420dd290d762c75f8ed6889" \
+  \
+  -e DERIVER_MODEL_CONFIG__TRANSPORT=openai \
+  -e DERIVER_MODEL_CONFIG__MODEL=deepseek-ai/deepseek-v4-flash \
+  -e DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL=https://nonoke-omn.hf.space/v1 \
+  \
+  -e SUMMARY_MODEL_CONFIG__TRANSPORT=openai \
+  -e SUMMARY_MODEL_CONFIG__MODEL=deepseek-ai/deepseek-v4-flash \
+  -e SUMMARY_MODEL_CONFIG__OVERRIDES__BASE_URL=https://nonoke-omn.hf.space/v1 \
+  \
+  -e DIALECTIC_LEVELS__minimal__MODEL_CONFIG__TRANSPORT=openai \
+  -e DIALECTIC_LEVELS__minimal__MODEL_CONFIG__MODEL=deepseek-ai/deepseek-v4-flash \
+  -e DIALECTIC_LEVELS__minimal__MODEL_CONFIG__OVERRIDES__BASE_URL=https://nonoke-omn.hf.space/v1 \
+  \
+  -e DREAM_ENABLED=false \
+  \
+  -e EMBEDDING_MODEL_CONFIG__TRANSPORT=openai \
+  -e EMBEDDING_MODEL_CONFIG__MODEL=nvidia/nv-embedqa-e5-v5 \
+  -e EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=https://nonoke-omn.hf.space/v1 \
+  -e EMBEDDING_MODEL_CONFIG__DIMENSIONS_MODE=never \
+  -e EMBEDDING_VECTOR_DIMENSIONS=1024 \
+  \
+  -e CACHE_ENABLED=false \
+  -e METRICS_ENABLED=false \
+  -e TELEMETRY_ENABLED=false \
+  -e SENTRY_ENABLED=false \
+  \
+  honcho-hf-local:latest
+
+# 此处容器已起(run 上方 docker run -d)。现验并 cleanup。
+# 注:docker run -d 立即返,容器后台跑。下面轮询 health。
+
+echo ""
+echo "=== 等容器 provision + 起监听(轮询 /health 至 45s)==="
+HEALTH=""
+for i in $(seq 1 15); do
+  sleep 3
+  HEALTH=$(curl -sS http://localhost:7860/health 2>/dev/null) || HEALTH=""
+  if [[ -n "$HEALTH" ]]; then
+    echo "[第 ${i} 轮 /health OK] $HEALTH"
+    break
+  fi
+  echo "[第 ${i} 轮 $((${i}*3))s] 容器未就绪,等... ($(docker inspect -f '{{.State.Status}}' honcho-local 2>/dev/null || echo '?'))"
+done
+
+echo ""
+echo "=== /health 最终 ==="
+if [[ -n "$HEALTH" ]]; then
+  echo "OK: $HEALTH"
+else
+  echo "FAIL — 容器未监听 7860"
+fi
+
+echo ""
+echo "=== 容器完整 log(从头到尾,定死因)==="
+docker logs honcho-local 2>&1 || true
+
+echo ""
+echo "=== 容器状态 ==="
+docker ps -a --filter "name=honcho-local" --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+echo ""
+echo "=== 手停容器(验完后跑) ==="
+echo "docker stop honcho-local && docker rm honcho-local"
+
