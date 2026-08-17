@@ -118,8 +118,13 @@ if [ -f "$APP_DIR/scripts/restore_state.py" ]; then
 fi
 
 # 后台:Neon 持久化同步(结构化四表直接写 Neon, 2026-08-17 替代 Supabase+R2 双写)
+# ★2026-08-17 HTTP /sql 重构: psycopg2 → httpx 裸调 Neon /sql 端点
+#   - 每次 query = 独立 HTTP POST, 完即断, 不占 TCP 连接 → Neon 自然 scale-to-zero
+#   - SYNC_INTERVAL_SEC 默认 600s (> Neon Free 5min auto-suspend → 保证 suspend)
+#   - CU-h ~0.5-3/月 (vs 原 psycopg2 长连接 180 CU-h/月超额)
 if [ -n "${POSTGRES_HOST:-}" ]; then
-  echo "[real-start] persist-neon daemon up (→ Neon ${POSTGRES_HOST}/${POSTGRES_DB:-neondb})"
+  export SYNC_INTERVAL_SEC="${SYNC_INTERVAL_SEC:-600}"
+  echo "[real-start] persist-neon daemon up (→ Neon ${POSTGRES_HOST}/${POSTGRES_DB:-neondb}, interval=${SYNC_INTERVAL_SEC}s, HTTP /sql mode)"
   nohup python "$APP_DIR/scripts/persist_to_neon.py" >"${LOG_DIR:-/opt/data/logs}/persist-neon.log" 2>&1 &
 else
   echo "[real-start] persist-neon daemon skip (need POSTGRES_HOST)"
