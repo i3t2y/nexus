@@ -74,6 +74,7 @@ jobs:
       - name: Sync nworker → HF Bucket (nmem/logic)
         env:
           HF_M_TOKEN: ${{ secrets.HF_M_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_M_TOKEN }}
         run: |
           hf buckets sync ./spaces/memgraph/nworker hf://buckets/nmem/logic/nworker
           echo "::notice::nworker 已同步到 nmem/logic Bucket"
