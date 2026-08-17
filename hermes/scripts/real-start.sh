@@ -117,10 +117,12 @@ if [ -f "$APP_DIR/scripts/restore_state.py" ]; then
   python "$APP_DIR/scripts/restore_state.py" 2>&1 | sed 's/^/[real-start] /'
 fi
 
-# 后台:Supabase→R2 双写快照(如配置了凭证才起)
-if [ -n "${SUPABASE_URL:-}" ]; then
-  echo "[real-start] persist daemon up"
-  nohup python "$APP_DIR/scripts/persist_to_r2.py" >"$LOG_DIR/persist.log" 2>&1 &
+# 后台:Neon 持久化同步(结构化四表直接写 Neon, 2026-08-17 替代 Supabase+R2 双写)
+if [ -n "${POSTGRES_HOST:-}" ]; then
+  echo "[real-start] persist-neon daemon up (→ Neon ${POSTGRES_HOST}/${POSTGRES_DB:-neondb})"
+  nohup python "$APP_DIR/scripts/persist_to_neon.py" >"${LOG_DIR:-/opt/data/logs}/persist-neon.log" 2>&1 &
+else
+  echo "[real-start] persist-neon daemon skip (need POSTGRES_HOST)"
 fi
 
 # 后台:state.db → HF Bucket 快照(会话历史持久,防重启丢)
