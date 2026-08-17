@@ -1,15 +1,11 @@
-# 同步 memgraph 三件 + nworker 到 HF Space nmem/memlg + HF Bucket nmem/logic
+# 同步 memgraph 到 HF Space nmem/memlg + HF Bucket nmem/logic
 # 三件套统一 Bucket: GitHub → Actions → HF Space (三文件) + HF Bucket (逻辑层)
+# 三文件和逻辑层分开推: 改三文件才推 Space (触发 rebuild), 改 nworker 才 sync Bucket
 #
 # 命名约定 (沿用 nexus per-Space token):
-#   HF_H_TOKEN   → sonoke/h       (hermes 主控)
-#   HF_L_TOKEN   → sonoke/l       (langgraph 编排)
-#   HF_CC_TOKEN  → sonoke/cc      (claude-code 执行器)
-#   HF_C_TOKEN   → sonoke/c       (codex 执行器)
 #   HF_M_TOKEN   → nmem/memlg     (mem0 后端, 本 workflow)
 #
-# 触发: 手动 workflow_dispatch 或 push 涉 spaces/memgraph/** 变更。
-# 前提: GitHub Secret HF_M_TOKEN = nmem 账号 HF token (对 nmem/memlg Space 写权限)
+# 前提: GitHub Secret HF_M_TOKEN = nmem 账号 HF token
 #       HF Bucket nmem/logic 已创建且已挂载到 Space /data
 name: Sync memgraph → HF Space + Bucket
 
@@ -18,18 +14,21 @@ on:
   push:
     branches: [main]
     paths:
-      - "spaces/memgraph/**"
+      - "spaces/memgraph/Dockerfile"
+      - "spaces/memgraph/README.md"
+      - "spaces/memgraph/start.sh"
+      - "spaces/memgraph/nworker/**"
       - ".github/workflows/deploy-memgraph.yml"
 
 jobs:
-  deploy-memgraph:
+  # ── 推三文件到 HF Space (触发 rebuild) ──
+  deploy-space:
+    if: |
+      !contains(github.event.head_commit.message, '[skip space]')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout nexus 源仓
+      - name: Checkout nexus
         uses: actions/checkout@v4
-
-      - name: Install hf CLI
-        run: pip install -q "huggingface_hub[cli]>=1.0"
 
       - name: 配置 git HF push 身份
         run: |
@@ -40,27 +39,20 @@ jobs:
         env:
           HF_M_TOKEN: ${{ secrets.HF_M_TOKEN }}
         run: |
-          set -e
           git clone "https://user:${HF_M_TOKEN}@huggingface.co/spaces/nmem/memlg" hf-space
           cd hf-space
-          git fetch --all
           git checkout main || git checkout -B main
 
-      - name: 拷贝三文件 → HF repo 根
+      - name: 拷贝三文件 → HF repo
         run: |
-          set -e
-          src="spaces/memgraph"
-          dst="hf-space"
           for f in Dockerfile README.md start.sh; do
-            cp "${src}/${f}" "${dst}/${f}"
-            echo "[sync] ${src}/${f} → ${dst}/${f}"
+            cp "spaces/memgraph/${f}" "hf-space/${f}"
           done
 
-      - name: Commit + push 三文件 (若有变更)
+      - name: Commit + push (若有变更)
         env:
           HF_M_TOKEN: ${{ secrets.HF_M_TOKEN }}
         run: |
-          set -e
           cd hf-space
           git add Dockerfile README.md start.sh
           if git diff --cached --quiet; then
@@ -71,9 +63,20 @@ jobs:
             echo "::notice::已 push 三文件到 nmem/memlg, HF 自动触发 rebuild"
           fi
 
+  # ── sync 逻辑层到 HF Bucket (不触发 rebuild) ──
+  deploy-bucket:
+    if: |
+      !contains(github.event.head_commit.message, '[skip bucket]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout nexus
+        uses: actions/checkout@v4
+
+      - name: Install hf CLI
+        run: pip install -q "huggingface_hub[cli]>=1.0"
+
       - name: Sync nworker → HF Bucket (nmem/logic 根目录)
         env:
-          HF_M_TOKEN: ${{ secrets.HF_M_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_M_TOKEN }}
         run: |
           hf buckets sync ./spaces/memgraph/nworker hf://buckets/nmem/logic
