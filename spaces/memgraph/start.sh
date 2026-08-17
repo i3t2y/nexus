@@ -22,36 +22,23 @@ if [ "$_need_install" = "1" ]; then
   echo "[start] 环境补全完成"
 fi
 
-# ── 2. 拉取逻辑层 (从 HF Bucket nmem/logic 拉取, Python API 无需 hf CLI) ──
-# 三件套统一 Bucket: 版本化走 GitHub→Actions→Bucket, 运行时 Bucket sync 拉取
-echo "[start] 拉取逻辑层: sync_bucket nmem/logic/nworker → /app/worker"
+# ── 2. 拉取逻辑层 (从 HF Bucket nmem/logic 挂载的 /data 复制) ──
+# 三件套统一 Bucket: 版本化走 GitHub→Actions→Bucket, 运行时 /data mount 直接读
+echo "[start] 拉取逻辑层: cp /data → /app/worker"
 mkdir -p /app/worker
 
-_err=/tmp/.sync.err; : > "$_err"
-python3 -c "
-import os, sys
-from huggingface_hub import HfApi
-token = os.environ.get('HF_TOKEN', '')
-api = HfApi(token=token if token else None)
-try:
-    api.sync_bucket(
-        source='hf://buckets/nmem/logic/nworker',
-        dest='/app/worker',
-        delete=True,
-    )
-    print('逻辑层已同步到 /app/worker')
-except Exception as e:
-    print(f'FATAL: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>"$_err" || {
-  if [ -n "$HF_TOKEN" ]; then
-    sed "s/$HF_TOKEN/[REDACTED]/g" "$_err" >&2
-  else
-    cat "$_err" >&2
-  fi
-  echo "[start] FATAL: Bucket sync 失败"
+if [ -d /data ] && ls /data/* >/dev/null 2>&1; then
+  cp -r /data/* /app/worker/ 2>/dev/null || cp -r /data /app/worker/ 2>/dev/null || {
+    echo "[start] FATAL: /data 复制失败"
+    ls -la /data/ 2>&1
+    exit 1
+  }
+  echo "[start] 逻辑层已复制到 /app/worker"
+else
+  echo "[start] FATAL: /data 未挂载或为空 (Bucket nmem/logic 未正确挂载)"
+  ls -la /data/ 2>&1
   exit 1
-}
+fi
 
 # Ensure history directory exists (mem0 SQLiteManager needs it)
 mkdir -p /app/history

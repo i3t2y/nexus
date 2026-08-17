@@ -71,10 +71,10 @@ jobs:
             echo "::notice::已 push 三文件到 nmem/memlg, HF 自动触发 rebuild"
           fi
 
-      - name: Sync nworker → HF Bucket (nmem/logic)
+      - name: Sync nworker → HF Bucket (nmem/logic 根目录)
         env:
           HF_M_TOKEN: ${{ secrets.HF_M_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_M_TOKEN }}
         run: |
-          hf buckets sync ./spaces/memgraph/nworker hf://buckets/nmem/logic/nworker
-          echo "::notice::nworker 已同步到 nmem/logic Bucket"
+          hf buckets sync ./spaces/memgraph/nworker hf://buckets/nmem/logic
+          echo "::notice::nworker 已同步到 nmem/logic Bucket 根目录"
