@@ -1,32 +1,47 @@
 # memgraph Space — 三件套之一
 
 ## 定位
-- **HF Space**: `nmem/memgraph` (public, Docker SDK, port 7860)
+- **HF Space**: `nmem/memlg` (public, Docker SDK, port 7860)
 - **职能**: Mem0 server (记忆层) + LangGraph worker (编排)
 - **后端**: Neon Postgres (pgvector, AWS us-east-1)
 - **保活**: cron-job.org 每 4min ping `/health`
 
 ## 三件套
 1. Hermes (sonoke/h) — 入口/路由/调度 (云上大脑)
-2. memgraph (nmem/memgraph) — 记忆+编排 (本目录)
-3. Neon — 数据持久化
+2. memgraph (nmem/memlg) — 记忆+编排 (本目录)
+3. Neon — 数据持久化 (mem0 memories + hermes 结构化四表)
 
-## 文件结构
-- `Dockerfile` — 三文件之一 (冻结)
-- `README.md` — HF Space frontmatter (冻结)
-- `start.sh` — 启动薄引导 (冻结)
-- `nworker/` — 逻辑层 (entrypoint.sh + run.py + graph/ + patches/)
+## 文件结构 (2026-08-17 重构)
+- `space/` — 三文件 (Dockerfile + README.md + start.sh), 推 HF Space git repo
+- `bucket/` — 逻辑层 (entrypoint.sh + run.py + graph/ + patches/ + requirements.txt), sync HF Bucket
+- `docs/` — neon-schema.sql + DEPLOY.md + SECRETS.md
+- `STATUS.md` — 本文件
 
 ## 持久化
-- 三文件 → HF Space git repo (不频繁改)
-- 逻辑层 → HF Bucket `nmem/logic` (rw 挂载 /data)
+- 三文件 → HF Space git repo (不频繁改, Actions 推)
+- 逻辑层 → HF Bucket `nmem/logic` (rw 挂载 /data, Actions sync)
 - 配置 → HF Secrets (零文件持久化)
-- 版本化 → GitHub `i3t2y/nexus` 私库 (本目录)
+- 版本化 → GitHub `i3t2y/nexus` public 仓库
 
 ## 部署链
 ```
-GitHub i3t2y/nexus (版本化真源)
-  → Actions (push 触发)
-  → hf buckets sync nworker/ → nmem/logic Bucket
-  → memgraph Space start.sh: hf buckets sync 拉 → /app/worker
+GitHub i3t2y/nexus (版本化真源, public)
+  → Actions (两个 job 分开跑)
+    → deploy-space:  三文件 space/ → HF Space git repo (触发 rebuild)
+    → deploy-bucket: 逻辑层 bucket/ → HF Bucket sync (不 rebuild)
 ```
+
+## Neon 表结构
+- `memories` — mem0 记忆 (pgvector 2048维, hnsw=False)
+- `agent_states` / `task_logs` / `long_memory` / `skills_index` — hermes 结构化四表
+- `task_queue` / `space_health` — 辅助表
+- DDL: `docs/neon-schema.sql` (幂等, 不需要 RLS)
+
+## 状态 (2026-08-17)
+- ✅ memlg Space RUNNING, /health ok
+- ✅ Neon memories 表有数据
+- ✅ Actions run #9 success (两 job 分开跑通)
+- ✅ Bucket nmem/logic 挂载 rw
+- ⏳ Neon 七表 DDL 待执行 (neon-schema.sql)
+- ⏳ hermes Space 待加 POSTGRES_* Secrets + 删 Supabase/R2 Secrets
+- ⏳ hermes Space 待重启 (让 mem0.json self_hosted + POSTGRES_HOST 生效)

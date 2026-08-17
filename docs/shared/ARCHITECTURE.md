@@ -1,222 +1,86 @@
-# Nexus 架构总览
+# 三件套统一架构 (2026-08-17)
 
-> 混合 Agent 系统：HF Spaces 计算 + Cloudflare R2 大文件 + Supabase Postgres 结构化状态。
-> 目标：稳定、低成本、低暴露。
-
-## 设计原则
-
-1. **计算与存储分离** — HF Space 只当计算单元，所有持久状态走 R2 / Supabase。Space 重启不丢数据。
-2. **主控路由** — Hermes 唯一入口，下游 Space 不直接对外。降低暴露面。
-3. **凭证外置** — 所有密钥通过 Space Secrets / 环境变量注入，不入库不入代码。
-4. **模板先行** — 凭证未到位前，全部文件可直接部署，填 `.env` 即跑。
-
-## 组件分布
-
-| Space | 角色 | SDK | 状态 |
-|-------|------|-----|------|
-| `hermes` | 主控大脑(⚠️ 换装后实态 = 全原生 NousResearch Hermes Agent 三组件:gateway api_server `/v1/runs` + dashboard SPA + 两 plugin tab,非自建 Gradio+FastAPI。详见 [hermes-换装实况.md](./hermes/hermes-换装实况.md))。**永续改造**:逻辑层进 HF Storage Bucket /data 挂载,镜像层进 GHCR nexus-base:stable,Dockerfile 成墓碑永不动 | Docker | 换装后 |
-| `langgraph` | 复杂工作流编排，含 Checkpointer | Docker | 模板 |
-| `claude-code` | 复杂推理、代码生成 | Docker | 模板 |
-| `codex` | 快速编码、补全 | Docker | 模板 |
-
-Space 间通过 `https://{owner}-{space}.hf.space` 互调，鉴权用共享 `NEXUS_API_KEY`（见 [通信方案](./COMMUNICATION.md)）。
-
-## 存储分层
-
+## 三件套
 ```
-        ┌──────────────────────────────────────┐
-        │            HF Spaces (计算)            │
-        │  hermes  langgraph  claude  codex     │
-        └───────────────┬──────────────────────┘
-                        │  (Secrets 注入凭证)
-            ┌───────────┴───────────┐
-            ▼                       ▼
-   ┌─────────────────┐     ┌──────────────────────┐
-   │  Cloudflare R2   │     │  Supabase Postgres    │
-   │  大文件/Checkpoint │     │  结构化/状态/Memory   │
-   │  /Skills/向量     │     │  + pgvector 向量搜索  │
-   └─────────────────┘     └──────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  hermes (sonoke/h)    云上大脑: 入口/路由/调度       │
+│  └→ mem0 (self_hosted) → MEM0_HOST → memlg Space     │
+│  └→ persist_to_neon.py → Neon 四表                   │
+├─────────────────────────────────────────────────────┤
+│  memgraph (nmem/memlg) 记忆+编排                    │
+│  └→ mem0 server → Neon memories 表 (pgvector)       │
+│  └→ LangGraph worker (进程内)                       │
+├─────────────────────────────────────────────────────┤
+│  Neon Postgres  数据持久化                           │
+│  └→ memories 表 (mem0, pgvector 2048维)             │
+│  └→ agent_states / task_logs / long_memory /        │
+│    skills_index (hermes 结构化四表)                  │
+│  └→ task_queue / space_health (辅助)                │
+└─────────────────────────────────────────────────────┘
 ```
 
-| 层 | 用途 | 何时用 |
-|----|------|--------|
-| **R2** | Checkpoint blob、Skills 备份、向量文件、大对象 | >1MB 或二进制 |
-| **Supabase** | agent_states、task_logs、long_memory、调度队列 | 结构化、需查询 |
-| **HF Datasets** | 临时缓存、必须放 HF 的文件 | 仅兜底 |
-
-## 数据流（典型任务）
-
-1. 请求到 Hermes `/run`，写 `task_logs`（status=pending）。
-2. Hermes 路由决策 → 调下游 Space（带 `thread_id`）。
-3. 下游 Space 读 Supabase 取 state，执行，写 R2 存大产物，回传结果。
-4. Hermes 收结果 → upsert `agent_states`、更新 `task_logs`（status=done）。
-5. LangGraph 长流程用 `AsyncPostgresSaver` 做 Checkpoint（状态进 Postgres，blob 进 R2）。
-
-## ⚠️ 关键约束（部署前必读）
-
-### HF Spaces 付费墙
-
-自 2024 年起，**Docker / Gradio Space 跑 compute 需付费套餐**：
-- 个人免费账号可跑最多 **2 个 Gradio Space (ZeroGPU)**，CPU Basic 免费。
-- **Docker SDK Space 原则上需 PRO / Team 付费套餐创建。**
-- 本方案 4 个 Space 全用 Docker，**部署时需确认账号开通了对应套餐**，否则 langgraph/claude/codex 三个 Docker Space 无法创建。Hermes 可改 Gradio + ZeroGPU 跑在免费层。
-
-### 免费 Space 会休眠
-
-免费硬件（CPU Basic / ZeroGPU）闲置后会"睡"。首调冷启动慢（数十秒）。
-- 常驻需求 → Hermes 用 keep-alive 或升级付费。
-- 休眠具体时长随政策变，以 [官方文档](https://huggingface.co/docs/hub/spaces-overview) 为准，不硬编码进代码。
-
-### 网络
-
-HF Space 出站仅 80 / 443 / 8080。R2(S3 API)、Supabase(HTTPS) 均走 443，无碍。
-
-### 持久化
-
-Space 内 `/data` 持久存储**已下线**。跨重启持久必须用 R2 / Supabase，不依赖本地磁盘。
-
-### 鉴权 header 冲突（私有 Space 必读）
-
-私有 HF Space 的 HF Gateway 用 `Authorization: Bearer <HF_TOKEN>` 鉴权**这层**。若 Worker/直调也用 `Authorization` 传 `NEXUS_API_KEY`，会**覆盖** HF 层 token → HF 层 401，请求进不到 Space app。
-
-解法：下游 Space 鉴权改用自定义 header **`X-Nexus-Key: Bearer <NEXUS_API_KEY>`**（各 Space `auth()` 读它，回退 `Authorization` 兼容）；`Authorization` 留给 HF 层（私有 Space 注入 `HF_TOKEN`）。只在调独立的 Cloudflare Worker 网关层（无 HF 层）时，入站鉴权仍用 `Authorization`。
-
-### auth fail-closed
-
-`auth()` 缺 `NEXUS_API_KEY` 时拒绝（500 配置错误），不"忘配即放行"。本地免鉴权显式设 `NEXUS_AUTH_MODE=dev`。模板默认走生产语义，降低误留 open 的风险。
-
-### Worker path 白名单（防 SSRF）
-
-`workers/gateway/src/index.ts` `/route` 对下游 `path` 做白名单（`/execute` `/run` `/complete` `/health`），挡住任意 path 透传到任意 URL/端点。`/` 起头校验 + `..` 检测防回溯与绝对 URL。
-
-### 幂等键（防双扣费 / 双执行）
-
-`task_queue.idempotency_key` UNIQUE 列。`POST /enqueue` 接 `Idempotency-Key` header；同键重复入队命中已有，不重复执行。LLM POST 本身非幂等——上自动重试必先配幂等键，否则 5xx/超时已执行场景会双扣费/双执行。`/dequeue` 单消费者模板（两步 select+update 非原子锁，多消费者需改 Postgres `FOR UPDATE SKIP LOCKED` 直连）。
-
-### lifespan 池化（langgraph）
-
-`langgraph app/main.py` 用 FastAPI `lifespan` 启动建一次 `AsyncPostgresSaver` + `await cp.setup()` + 编译 graph，存 `app.state`；请求复用全局 checkpointer+graph，**不再每请求 setup**（违背文档"setup() 仅启动一次"+ 每次新连接开销量）。`AsyncPostgresSaver` 由 `build_checkpointer()`（`libs/shared/checkpointer.py`）构造，`from_conn_string` 内已设 `prepare_threshold=0`/`autocommit`/`row_factory`，6543 安全。
-
-### 统一错误结构 + request_id 透传
-
-- **统一错误体**：所有 Space 与 Worker 失败返回 `{error:{code, message, retryable, request_id}}`（`libs/shared/errors.py` 的 `error_response` / `raise_nexus_error`）。`retryable` 按 code 推断（下游暂时不可达类 = 可重试；配置/鉴权类 = 否），客户端据此决定是否重试，与 [幂等键](#幂等键防双扣费--双执行) 配合防双扣费。
-- **request_id 透传**：入站 header `X-Request-ID` 缺则生成 uuid4；hermes 调下游 `call_space(..., request_id=rid)` 透传 `X-Request-ID`、Worker `/route` 同名透传下游，全链路同 rid。`task_logs.request_id` 列记录（schema `do $$` 增量补列，幂等重跑安全），`log_event` 写结构化 JSON 日志（stdout，HF Space 抓）含 `ts/request_id/space/action/status`。
-- **fail-closed 仍生效**：`auth(cred, request_id)` 缺 key → `raise_nexus_error("config_error", ..., 500, rid)`，不"忘配即放行"。
-
-### 共享库导入路径修正
-
-`gateway` 在 `libs/shared/` 子包，**勿用 `from gateway import`**（顶层解析失败，PYTHONPATH=libs 不含 `shared/`）。各 Space 用 `from shared.gateway import call_space, ping`。`storage` 仍是顶层包（`libs/storage/`），`from storage import ...` 不变。
-
-### Hermes 永续改造(2026-07 锁死后)
-
-HF 免费个人号旧 Docker hermes Space 因 2026-07 平台变更锁死:git push/Factory reboot 触发 rebuild=付费墙(雷区1:rebuild 付费,雷区2:改 hardware 收费不可逆,雷区3:pause 后 restart 可能 403 永锁)。Restart 用缓存镜像不触墙(安全)。方案=绝对静态化,四层分离。
-
-> **永续架构动机完整来龙去脉**(三雷区+用户红线"git push 只用户手动"+架构师定调"确定性>灵活性"+目标绝对静态化+FROM ${ARG} 查证裁决+部署链骨架+待办)→ [docs/hermes/hermes-部署与永续架构动机.md](./hermes/hermes-部署与永续架构动机.md) §1~§6。本节一句动机,展开见该案卷。
-
-| 层 | 存哪 | 改触发 rebuild? | 文件 |
-|----|------|------|------|
-| 镜像层(钉死) | GHCR `ghcr.io/i3t2y/nexus-base:stable` | 仅升依赖时本地 build 推 GHCR 覆盖 :stable | python:3.11-slim+四 Space 依赖超集 |
-| 环境层(墓碑) | HF repo git | 仅首切 1 次(+依赖升 1 次 README 撞墙) | Dockerfile(ARG+FROM)、start.sh、README.md |
-| 逻辑层(常改) | HF Storage Bucket rw `/data` | 否,sync+Restart | app/scripts/libs |
-| 配置层 | HF Secrets | 否,只 Restart | 凭据 |
-
-- **改逻辑**: `bash scripts/sync-logic-bucket.sh` → Settings Restart(永不 git push HF)
-- **升依赖**: 本地 `docker build -t ghcr.io/i3t2y/nexus-base:stable -f docker/nexus-base.Dockerfile docker/` + `docker push` 覆盖 :stable → 改 README 一字符 git push(用户手动,1 次过付费墙窗口)
-- **首切鸡生蛋顺序(不可颠倒)**: ① build 推 GHCR :stable → ② HF 建 Bucket nexus-logic + Space 配 Volume /data rw → ③ `sync-logic-bucket.sh` 推逻辑 → ④ Settings Restart 验挂载 → ⑤ git push HF(1 次 rebuild) → ⑥ uvicorn `app.main:app --app-dir /data` import 成功
-
-#### FROM ${ARG} 查证裁决(立论依据)
-- ✅ 改 Variable 只 Restart 不 Rebuild(HF 官方"Any config change triggers a restart"证实)→ ARG 切镜像与浮动标签切镜像均需重建,成本打平,ARG 无"免重建换镜像"优势
-- ⚠️ FROM ${ARG} HF 行为**未证实**(非"不可靠"):官方示例自身有 Docker 语义瑕疵(ARG 前 FROM 声明却在 FROM 后 RUN 用,需 stage 内重声明未写);社区唯一"失败"报告用 `printenv` 测法错(build-arg 按设计不显 ENV)
-- 结论:选硬编码浮动标签 `FROM ${BASE_IMAGE}` + ARG 默认值 `ghcr.io/i3t2y/nexus-base:stable` 兜底。理由=重建是不可再生资源(付费墙+配额稀缺),单程票文件只允许最大化验证特性,代价相同选确定性满分一方(Dockerfile 永不动)。详见 docs 查证章。
-
-### HF Storage Bucket vs Dataset(查证裁决,防概念混用双份)
-
-**查证来源:HF 官方 CLI 文档 + Hub 存储文档(2026-07 查证)**。两者是**完全独立存储产品,非组合关系**:
-
-| 维度 | Dataset | Storage Bucket |
-|------|---------|---------------|
-| 底层 | git-based repo,track file history | Xet 后端 S3-like object storage(非 git,无版本历史) |
-| 写入 | `api.upload_file` commit 进 git | `hf buckets sync/cp` 推对象 |
-| 读取 | `snapshot_download(repo_type="dataset")` 拉 git repo | Volume 挂载 `hf://buckets/owner/name` rw,或 `hf buckets sync remote local` CLI 拉 |
-| 挂载 | 官方明文"Models, datasets, Spaces are always mounted **read-only**" | 官方明文"Only storage buckets support **read-write** mounts"(rw 默认) |
-| 用途 | 版本化数据集 | "mutable storage such as checkpoints, logs, artifacts, doesn't need version control"(官方原话) |
-| 配额 | HF Hub repo 配额(git repo 限制) | Bucket 独立 SIZE 列计费(`hf buckets list` 返 SIZE/TOTAL_FILES/PRIVATE) |
-
-**官方 CLI 文档逐字(L606)**: "Buckets provide S3-like object storage on Hugging Face, powered by the Xet storage backend. Unlike repositories (which are git-based and track file history), buckets are remote object storage containers designed for large-scale files with content-addressable deduplication... simple, fast, mutable storage... doesn't need version control."
-
-**双份额度裁决**:Bucket 与 Dataset 后端不互通(git vs Xet),底层对象不共享 → 若同份数据既进 Bucket 又进同名 dataset repo = **双份存储双配额**。Nexus 永续改造**只用 Bucket**(逻辑层需 rw 且免 git history,正合 Bucket 场景),**不建 dataset repo**。
-
-**防哑火铁律**:拉 Bucket 必用 `hf buckets sync`(CLI),**禁用 `snapshot_download(repo_type="dataset")`**——后者找 git dataset repo,走不通 Bucket(若未建同名 dataset 则哑火;若建了则双份)。`hf` CLI 随 `huggingface_hub` 包(base 镜像已装)安装,故无新依赖。
-
-### Hermes Agent ≠ HTTP 服务（查证修正）
-
-> ⚠️ **2026-08-02 已推翻**(本文旧结论)。源码核证 `refs/hermes-agent` 后,hermes-agent 自带原生三组件:gateway 含 api_server adapter(`/v1/runs` HTTP 入口,env `API_SERVER_KEY` 触发)+ dashboard SPA(`web_server.start_server --port 7860`)。Nexus hermes Space **改全原生三组件,废弃自建 Gradio+FastAPI 框壳**。旧结论"不监听 HTTP、无 `--port`、须自建"系 2026-07 早期查证不全所致。**现役真态见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)**,以下旧文保留作历史辨伪参照(勿再据此自建):
->
-> ---
-
-Nous Research 开源 Hermes Agent（`github.com/NousResearch/hermes-agent`，`curl install.sh | bash` 安装）是 **TUI/CLI 交互式 agent**，基于 `uv` 装在 `~/.hermes/`。`hermes gateway start` 指**消息平台网关**（Telegram/Discord 等），**不监听 HTTP 端口**，**无 `--port` 参数**。
-
-故本方案 **不依赖原生 hermes CLI 作 Space 的 HTTP 主控**——HF Space 要求单进程监听 7860。Hermes Space 用自建 **Gradio Dashboard + FastAPI 路由** 同进程实现（监听 7860）。原生 hermes CLI 可选作**本地增强层**（自学习 Skills 等），非架构硬依赖。〔↑ 旧结论保留作辨伪,已推翻,见上〕
-
-> 注：部分参考文档提到 `hermes gateway start --port 7860`、`/learn`、`/goal`、`hermes skills install <name>`，官方 README（2026-07 查证）**均无**。前端方案不照搬，避免采坑。
-
-## 技术栈版本锚点
-
-| 组件 | 库 | 安装 |
-|------|----|----|
-| LangGraph Checkpoint | `langgraph-checkpoint-postgres` | `pip install langgraph-checkpoint-postgres` |
-| Supabase | `supabase` | `pip install supabase` |
-| R2 (S3 兼容) | `boto3` | `pip install boto3` |
-| HTTP 调用 | `httpx` | `pip install httpx` |
-
-API 已对照官方文档（2026-07）：
-- `AsyncPostgresSaver.from_conn_string(uri)` + `await checkpointer.setup()`。底层 **psycopg3**（非 asyncpg），`from_conn_string` 硬编码 `prepare_threshold=0`（禁 server-side prepared statement）+ `autocommit=True` + `row_factory=dict_row`，故 Supabase 6543 transaction pooler 直连安全，无需额外兜底。
-- `supabase.create_client(url, key, options=None)`，`upsert(json, on_conflict=, ignore_duplicates=)`
-
-## 增强机制（Hermes Space）
-
-> ⚠️ 本节描述系 hermes 换装前**自建框壳阶段**遗留(`start.sh` 自建 while 循环 `uvicorn app.main:app`、自建 Gradio Tab R2 文件管理、自建 `app/main.py` 路由)。**2026-08-02 换装后**:hermes 改全原生 NousResearch Hermes Agent 三组件,gateway/api_server/dashboard SPA/plugin 取代自建框壳,R2 文件管理改由 `nexus-r2` plugin 提 native tab。表中 `persist_to_r2.py`/`restore_from_r2.py`/`keepalive.py`/`replay_packages.py` 四脚本**仍保留**(litestream 互补灾备 + 保活 + 包重放,换装未动);自建 `app/main.py` 路由 / Gradio Tab / `uvicorn` 共生手法**已废**。**现役真态见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)**,本节取"四脚本保留"部为准,自建框壳部勿照。
-
-借自 HermesFace / HuggingMes 两项目的最高价值点，已改成 R2+Supabase 版集成进 Hermes Space：
-
-| 点 | 来源 | 实现 | 文件 |
-|----|------|------|------|
-| Cloudflare Keep-Alive | HuggingMes | Worker `/probe` + cron triggers；Hermes 端 `keepalive.py`（随机延时避免规律节奏） | `workers/gateway/`、`spaces/hermes/scripts/keepalive.py` |
-| Supabase 自身保活 | 查证补充 | `keepalive.py` 每轮 `space_health` insert = 轻量写 DB，防免费档 1 周不活跃自动暂停（查证 pricing.ts） | `spaces/hermes/scripts/keepalive.py` |
-| Ephemeral Package Replay | HuggingMes | 重启重装历史 pip 包 | `spaces/hermes/scripts/replay_packages.py`、`start.sh` |
-| 自愈 Gateway | HuggingMes | `start.sh` while 循环重启崩溃 app | `spaces/hermes/start.sh` |
-| 原子备份/恢复 | HermesFace | R2 写 tmp→copy 原子替换（替代 HF Dataset 原子写）；备份算 sha256+size 写 `backup_snapshots` 表与 R2 manifest，`restore_from_r2.py` 反向闭环时复算校验 | `spaces/hermes/scripts/persist_to_r2.py`、`restore_from_r2.py` |
-| Supabase→R2 双写同步 | 两者 | 周期把 Supabase 表快照写 R2（5分钟） | 同上 |
-| Dashboard 文件管理 | 两者 | Gradio Tab：R2 文件 上传/读入/编辑/保存/删除/刷新 | `spaces/hermes/app/main.py` |
-| **Bucket 永续改造** | OmniRoute 永续 | hermes 逻辑层(app/scripts/libs)从 Space repo 搬 HF Storage Bucket rw `/data` 挂载;改逻辑=`sync-logic-bucket.sh` 推 Bucket + Settings Restart(用缓存镜像,永不 git push=不触付费墙) | `scripts/sync-logic-bucket.sh`、`spaces/hermes/Dockerfile`、`spaces/hermes/start.sh` |
-| **GHCR base 镜像静态化** | 绝对静态化 | 依赖打 `ghcr.io/i3t2y/nexus-base:stable`,Dockerfile `ARG BASE_IMAGE=...:stable`+`FROM ${BASE_IMAGE}`(默认值兜底);升依赖=本地 build 推 GHCR 覆盖 :stable + 改 README 一字符 git push(用户手动 1 次)。三文件成墓碑永不动 | `docker/nexus-base.Dockerfile`、`docker/requirements-base.txt`、`.github/workflows/docker-base.yml`、`spaces/hermes/Dockerfile` |
-
-Hermes Space 目录(永续改造后,镜像仅留引导=墓碑):
+## 数据流
 ```
-spaces/hermes/            # ← git 真源(逻辑层镜像;CI 守此)
-├── README.md             # 引导文件(HF 要求 frontmatter)
-├── Dockerfile            # 墓碑:ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable + FROM ${BASE_IMAGE} + COPY start.sh + ENV PYTHONPATH=/data/libs。首切后永不动
-├── start.sh              # 引导:wait-for-mount /data + 起原生三组件(daemon thread1 gateway + thread2 dashboard) + 自愈监死(非旧 uvicorn app.main:app)
-├── app/main.py           # 逻辑层 → 进 HF Storage Bucket nexus-logic/app/(挂载 /data/app);换装后极薄(非旧自建路由 route()),boot 逻辑见换装实况 §2.4
-├── libs/                 # 同上(=根libs 镜像)→ Bucket nexus-logic/libs/(挂载 /data/libs);真源在根 libs/ 由 sync-logic-bucket.sh 推
-└── scripts/              # → Bucket nexus-logic/scripts/(挂载 /data/scripts)
-    ├── persist_to_r2.py      # 保留(litestream 互补灾备)
-    ├── restore_from_r2.py   # 保留
-    ├── replay_packages.py   # 保留
-    ├── keepalive.py          # 保留
-    └── config.yaml.template  # 模板:start.sh cmp 生 runtime config(omn provider 配置)
-```
-> ⚠️ 换装后 `start.sh` 起原生三组件(非旧 `uvicorn --app-dir /data app.main:app`);`app/main.py` 极薄(非旧自建 Gradio route)。**现役真态见 [docs/hermes/hermes-换装实况.md](./hermes/hermes-换装实况.md)**。
-(无 requirements.txt — 依赖进 GHCR base 镜像 ghcr.io/i3t2y/nexus-base:stable)
+用户 → Telegram → hermes (sonoke/h)
+  → mem0_search/mem0_add → SelfHostedBackend → HTTP → memlg Space
+    → mem0 server → Neon memories (pgvector 语义搜索)
+  → persist_to_neon.py (后台) → Neon 四表 (结构化状态)
 
-保活策略（用户已确认外部监测网站稳定可用）：
-- **Hermes/下游 Space**：主=外部监测网站 ping `/health`（已验证稳定）；辅=Worker cron + Hermes `keepalive.py` 内部互探，间隔随机化避免固定周期形成规律节奏。
-- **Supabase**：免费档 1 周不活跃自动暂停（仅停 compute，数据不丢可恢复）。`keepalive.py` 每轮写 `space_health` 表即刷"上次活动"。
-
-## 演进路径
-
-```
-阶段0 模板 (当前) → 阶段1 凭证就位单 Space 跑通 → 阶段2 全链路 → 阶段3 保活/监控
+保活:
+  cron-job.org (每4min) → memlg /health → Neon SELECT 1
 ```
 
-详见 [DEPLOYMENT.md](./DEPLOYMENT.md)、[CREDENTIALS.md](./CREDENTIALS.md)。
+## 存储
+| 层 | 内容 | 存储 | 持久化方式 |
+|---|---|---|---|
+| mem0 记忆 | 向量记忆 | Neon memories 表 | Neon 持久化 (scale-to-zero auto-wake) |
+| hermes 结构化 | 四表状态 | Neon | persist_to_neon.py 直连 |
+| 三文件 | Dockerfile+README+start.sh | HF Space git repo | Actions 推 (不频繁改) |
+| 逻辑层 | scripts/app/libs/plugins | HF Bucket (rw 挂载) | Actions sync |
+| home 文件 | .env/SOUL.md/config.yaml | HF Bucket home-backups/ | restore+uploader 周期 |
+| state.db | 会话历史 | 本地盘+Bucket快照 | restore_state+state_uploader |
+| 代码版本 | 全部 | GitHub i3t2y/nexus (public) | git push |
+| Secrets | Postgres/API keys | HF Space Secrets | 零文件持久化 |
+
+## Supabase → Neon 迁移 (2026-08-17)
+- **原**: mem0 oss mode 直连 Supabase pgvector + persist_to_r2.py 四表 Supabase→R2 双写
+- **新**: mem0 self_hosted → memlg Space → Neon memories + persist_to_neon.py 直连 Neon 四表
+- **砍掉**: Supabase (7天暂停风险) + R2 (Neon 已持久化不需要额外快照) + MEM0_PG_URI
+- **DDL**: `memgraph/docs/neon-schema.sql` (七表幂等, 无 RLS)
+
+## 部署链
+```
+GitHub i3t2y/nexus (public, Actions 无限免费)
+  → .github/workflows/deploy-memgraph.yml
+    → deploy-space:  memgraph/space/ → HF Space git (rebuild)
+    → deploy-bucket: memgraph/bucket/ → HF Bucket sync (不 rebuild)
+  → hermes/ 代码逻辑层 (Bucket 挂载引用)
+```
+
+## per-Space Token
+| Token | 用途 | Secret 名 |
+|---|---|---|
+| HF_H_TOKEN | hermes (sonoke) 推送 | secrets.HF_H_TOKEN |
+| HF_M_TOKEN | memgraph (nmem) 推送 | secrets.HF_M_TOKEN |
+| HF_L_TOKEN | Bucket 操作 | secrets.HF_L_TOKEN |
+| HF_CC_TOKEN | Claude Code Space | secrets.HF_CC_TOKEN |
+| HF_C_TOKEN | Codex Space | secrets.HF_C_TOKEN |
+
+## nexus 仓库结构
+```
+nexus/
+  hermes/
+    space/       ← Dockerfile + README.md + start.sh
+    app/ libs/ mcp/ scripts/ skills/
+  memgraph/
+    space/       ← Dockerfile + README.md + start.sh  → HF Space git
+    bucket/      ← entrypoint.sh + run.py + graph/    → HF Bucket sync
+    docs/  STATUS.md
+  docs/
+    hermes/   ← hermes 持久化/架构文档
+    memgraph/ ← memgraph 部署文档
+    shared/   ← 共享 (ARCHITECTURE/COMMUNICATION/CREDENTIALS)
+    archive/  ← 不用的旧文档
+  old/         ← 暂存不用的 (claude-code/codex/langgraph/honcho)
+  .github/workflows/deploy-memgraph.yml
+```
