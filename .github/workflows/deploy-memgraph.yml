@@ -14,10 +14,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "memgraph/Dockerfile"
-      - "memgraph/README.md"
-      - "memgraph/start.sh"
-      - "memgraph/nworker/**"
+      - "memgraph/space/Dockerfile"
+      - "memgraph/space/README.md"
+      - "memgraph/space/start.sh"
+      - "memgraph/bucket/**"
       - ".github/workflows/deploy-memgraph.yml"
 
 jobs:
@@ -46,7 +46,7 @@ jobs:
       - name: 拷贝三文件 → HF repo
         run: |
           for f in Dockerfile README.md start.sh; do
-            cp "memgraph/${f}" "hf-space/${f}"
+            cp "memgraph/space/${f}" "hf-space/${f}"
           done
 
       - name: Commit + push (若有变更)
@@ -58,7 +58,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "[sync] 三文件无变更, 跳过 push"
           else
-            git commit -m "sync memgraph 三文件 (触发 rebuild)"
+            git commit -m "sync memgraph space 三文件 (触发 rebuild)"
             git push "https://user:${HF_M_TOKEN}@huggingface.co/spaces/nmem/memlg" main
             echo "::notice::已 push 三文件到 nmem/memlg, HF 自动触发 rebuild"
           fi
@@ -79,5 +79,5 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_M_TOKEN }}
         run: |
-          hf buckets sync ./memgraph/nworker hf://buckets/nmem/logic
+          hf buckets sync ./memgraph/bucket hf://buckets/nmem/logic
           echo "::notice::nworker 已同步到 nmem/logic Bucket 根目录"
