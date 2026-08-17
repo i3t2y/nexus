@@ -1,0 +1,54 @@
+name: Deploy Spaces
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'spaces/memlg/**'
+
+jobs:
+  deploy-memlg:
+    runs-on: ubuntu-latest
+    if: |
+      !contains(github.event.head_commit.message, '[skip-deploy]')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install hf CLI
+        run: pip install -q "huggingface_hub[cli]>=1.0"
+
+      - name: Push three files to HF Space (memlg)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN_MEMLG }}
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+          git clone https://user:${HF_TOKEN}@huggingface.co/spaces/nmem/memlg hf-space || {
+            echo "ERROR: HF Space nmem/memlg not found."
+            exit 1
+          }
+
+          cp spaces/memlg/Dockerfile spaces/memlg/README.md spaces/memlg/start.sh hf-space/
+
+          cd hf-space
+          for f in $(ls -A | grep -v '^\.git$' | grep -v 'Dockerfile' | grep -v 'README.md' | grep -v 'start.sh' | grep -v '^\.gitattributes$'); do
+            rm -rf "$f"
+          done
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No Space changes, skipping push"
+          else
+            git commit -m "Deploy memlg from nexus: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            git push origin main
+            echo "=== Three files pushed to nmem/memlg ==="
+          fi
+
+      - name: Sync nworker to HF Bucket (memlg)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN_MEMLG }}
+        run: |
+          hf buckets sync ./spaces/memlg/nworker hf://buckets/nmem/logic/nworker
+          echo "=== nworker synced to nmem/logic Bucket ==="
