@@ -1,4 +1,4 @@
-# 同步 memlg 三件 + nworker 到 HF Space nmem/memlg + HF Bucket nmem/logic
+# 同步 memgraph 三件 + nworker 到 HF Space nmem/memlg + HF Bucket nmem/logic
 # 三件套统一 Bucket: GitHub → Actions → HF Space (三文件) + HF Bucket (逻辑层)
 #
 # 命名约定 (沿用 nexus per-Space token):
