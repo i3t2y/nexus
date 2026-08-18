@@ -24,25 +24,32 @@ Bucket sonoke/logic (rw 挂载 /data)
   ├── state-backups/   →  state_db_uploader.py 周期推 (300s)
   └── scripts/ + app/ + libs/ + plugins/  →  逻辑层真源
 
-Neon Postgres (持久化, 替代 Supabase+R2)
+Neon Postgres (持久化主路, 替代 Supabase+R2 旧链)
   ├── memories 表 (mem0 记忆, 通过 memlg Space)
-  ├── agent_states / task_logs / long_memory / skills_index (persist_to_neon.py)
+  ├── agent_states / task_logs / long_memory / skills_index (persist_to_neon.py 主路 600s)
   └── task_queue / space_health (辅助)
+
+Cloudflare R2 (灾备快照副路, 2026-08-18 恢复)
+  └── supabase-snapshot/{四表}.json + _manifest.json (persist_to_r2.py 读 Neon 1800s)
 ```
 
-## Supabase → Neon 迁移状态 (2026-08-17)
+## Supabase → Neon 迁移 (2026-08-17) + R2 副路恢复 (2026-08-18)
 ### 已完成
 - ✅ mem0.json mode: oss → self_hosted (本地改, 重启后 MEM0_HOST 接管)
-- ✅ persist_to_neon.py 写好 (替代 persist_to_r2.py, 砍 R2+Supabase 直连 Neon)
+- ✅ persist_to_neon.py 写好 (替代 persist_to_r2.py, 砍 R2+Supabase 直连 Neon 主路)
 - ✅ real-start.sh 门控: SUPABASE_URL → POSTGRES_HOST
-- ✅ neon-schema.sql 写好 (七表 DDL, 幂等)
+- ✅ neon-schema.sql 写好 (七表 DDL, 幂等, 无 backup_snapshots)
 - ✅ 代码改动已推 nexus (commit f035a48)
+- ✅ 2026-08-17 Neon Free 保活反策略 (persist_to_neon httpx /sql 短请求 + /health 不碰 Neon, commit 3fbd846)
+- ✅ 2026-08-18 R2 副路恢复: persist_to_r2.py 读源 Supabase→Neon (HTTP /sql),
+  与 Neon 主路双写, manifest-only 不进 DB; restore_from_r2.py 反向闭环改 Neon 写回
 
 ### 待执行 (用户手动)
 1. **Neon Console**: 执行 `memgraph/docs/neon-schema.sql` (建七表)
-2. **hermes Space Secrets**: 加 POSTGRES_HOST/PORT/USER/PASSWORD/DB (Neon 连接信息)
-3. **hermes Space Secrets**: 删 SUPABASE_URL/SERVICE_ROLE_KEY/ANON_KEY/DB_URI + MEM0_PG_URI + R2_*
-4. **hermes Space Restart**: 让 mem0.json self_hosted + POSTGRES_HOST + persist_to_neon 全部生效
+2. **hermes Space Secrets**: 加 POSTGRES_HOST/PORT/USER/PASSWORD/DB (Neon 连接信息, 主路+R2 副路共用)
+3. **hermes Space Secrets**: 加 R2_ENDPOINT/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET (副路灾备)
+4. **hermes Space Secrets**: 删 SUPABASE_URL/SERVICE_ROLE_KEY/ANON_KEY/DB_URI + MEM0_PG_URI
+5. **hermes Space Restart**: 让 mem0.json self_hosted + Neon 主路 + R2 副路全部生效
 
 ### 旧数据
 - Supabase hermes_mem0 表 (~54行) 不迁移, 留在 Supabase 不删, 以后需要再导

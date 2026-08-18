@@ -82,5 +82,7 @@ create table if not exists space_health (
 );
 create index if not exists space_health_space_idx on space_health (space, created_at desc);
 
--- 注意: backup_snapshots 表不需要了 (R2 砍掉, Neon 本身就是持久化)
+-- 注意: backup_snapshots 表不需要 (R2 副路 manifest-only 不走 DB;
+--   2026-08-18 R2 恢复作快照备份层,读源=Neon,元数据 sha256/bytes/rows 全放 R2
+--   supabase-snapshot/_manifest.json,不倒退 Neon schema 加回 backup_snapshots)
 -- 注意: 不需要 RLS (Neon 没有 Supabase 的 RLS 机制, 靠连接串权限控制)

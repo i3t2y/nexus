@@ -1,18 +1,21 @@
-"""R2 → Supabase 反向恢复（#24）。
+"""R2 → Neon 反向恢复(2026-08-18 重构,Supabase 读源→Neon)。
 
-persist_to_r2.py 把 Supabase 表周期快照到 R2；本脚本做反向闭环：
-读 R2 snapshot → 复算 sha256 对比 backup_snapshots 行（挡静默损坏/截断）→
-upsert 回 Supabase 表（service_role 绕过 RLS）。
+persist_to_r2.py 把 Neon 四表周期快照到 R2;本脚本做反向闭环:
+读 R2 snapshot → 复算 sha256 对比 R2 manifest 登记值(挡静默损坏/截断)→
+upsert 回 Neon 表(via HTTP /sql INSERT ... ON CONFLICT)。
 
-命令行：
+manifest-only(D2):元数据(sha256/bytes/rows)只放 R2 `_manifest.json`,不查 Neon 表。
+校验对比从 manifest 取该表最新登记,无 R2 登记则降级放行。
+
+命令行:
   python restore_from_r2.py --all                 # 恢复全部 _TABLES
   python restore_from_r2.py --table agent_states  # 仅恢复某表
-  python restore_from_r2.py --list                # 列 manifest 内容（只读）
+  python restore_from_r2.py --list                # 列 manifest 内容(只读)
   python restore_from_r2.py --table foo --verify-only  # 仅校验 sha256 不写
 
-幂等：重跑安全（upsert on_conflict 覆盖）。--verify-only 可干跑校下沉链路。
+幂等:重跑安全(ON CONFLICT 主键覆盖)。--verify-only 可干跑校下沉链路。
 
-环境变量同 persist_to_r2.py（R2_*、SUPABASE_*）。
+环境变量同 persist_to_r2.py(R2_*、POSTGRES_*)。
 """
 from __future__ import annotations
 
@@ -23,28 +26,38 @@ import os
 import sys
 from typing import Any
 
-sys.path.insert(0, "/data/libs")  # Bucket 挂载点;Space 内 PYTHONPATH 已设，本地调试兜底
+sys.path.insert(0, "/data/libs")  # Bucket 挂载点;Space 内 PYTHONPATH 已设,本地调试兜底
 import boto3  # noqa: E402
 import botocore.exceptions  # noqa: E402
+import httpx  # noqa: E402
 from botocore.config import Config  # noqa: E402
-from supabase import create_client  # noqa: E402
 
 _BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
 _MANIFEST_KEY = "supabase-snapshot/_manifest.json"
-# 主键列名（upsert on_conflict 需要）+ 空 pk 列用 insert 而非 upsert
+# 主键列名(ON CONFLICT 需要)+ 空 pk 列用 insert 而非 upsert
 _PK: dict[str, str | None] = {
     "agent_states": "thread_id",
     "long_memory": "key",
     "skills_index": "skill_name",
-    "task_logs": None,  # bigserial id 代理键，恢复时不覆盖 → 用纯 insert
+    "task_logs": None,  # bigserial id 代理键,恢复时不覆盖 → 用纯 insert
     "backup_snapshots": "id",
     "space_health": "id",
 }
 
-# 安全门：默认不恢复 task_logs/空间健康表的代理键表（id 重复会撞主键 → insert 报错，
-# 不该靠备份覆盖自增历史）。仅 agent_states/long_memory/skills_index 走 upsert 全量覆盖。
+# 安全门:默认不恢复 task_logs/空间健康表的代理键表(id 重复会撞主键 → insert 报错,
+# 不该靠备份覆盖自增历史)。仅 agent_states/long_memory/skills_index 走 upsert 全量覆盖。
 _SAFE_RESTORE = {"agent_states", "long_memory", "skills_index"}
+
+# 各表非 pk 列(jsonb 列回写需 $N::jsonb 强转),按 neon-schema.sql 列序
+_COLS: dict[str, list[tuple[str, str]]] = {
+    "agent_states": [("state", "jsonb"), ("updated_at", "timestamptz")],
+    "long_memory": [("value", "jsonb"), ("updated_at", "timestamptz")],
+    "skills_index": [
+        ("description", "text"), ("source", "text"), ("r2_key", "text"),
+        ("usage_count", "integer"), ("last_used", "timestamptz"),
+    ],
+}
 
 
 def _r2():
@@ -58,13 +71,48 @@ def _r2():
     )
 
 
-def _supa():
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
-    return create_client(os.getenv("SUPABASE_URL", ""), key)
+# ── Neon HTTP /sql 写回(复制 persist_to_r2.py 同款) ──────────────────────────
+def _conn_str() -> str:
+    host = os.getenv("POSTGRES_HOST", "")
+    if not host:
+        raise RuntimeError("[neon] POSTGRES_HOST empty (HF Secrets missing)")
+    if host.endswith("-pooler"):
+        host = host[: -len("-pooler")]
+    user = os.getenv("POSTGRES_USER", "")
+    password = os.getenv("POSTGRES_PASSWORD", "")
+    db = os.getenv("POSTGRES_DB", "neondb")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    return f"postgresql://{user}:{password}@{host}:{port}/{db}?sslmode=require"
+
+
+def _sql_url() -> str:
+    host = os.getenv("POSTGRES_HOST", "")
+    if not host:
+        raise RuntimeError("[neon] POSTGRES_HOST empty (HF Secrets missing)")
+    if host.endswith("-pooler"):
+        host = host[: -len("-pooler")]
+    return f"https://{host}/sql"
+
+
+def _neon_query(query: str, params: list | None = None) -> list[dict]:
+    headers = {
+        "Neon-Connection-String": _conn_str(),
+        "Content-Type": "application/json",
+    }
+    body: dict[str, Any] = {"query": query}
+    if params:
+        body["params"] = params
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(_sql_url(), headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and "rows" in data:
+            return data["rows"]
+        return []
 
 
 def _get_manifest(r2) -> dict[str, Any] | None:
-    """读 R2 manifest 对象；不存在返回 None。"""
+    """读 R2 manifest 对象;不存在返回 None。"""
     try:
         resp = r2.get_object(Bucket=_BUCKET, Key=_MANIFEST_KEY)
         return json.loads(resp["Body"].read())
@@ -79,40 +127,37 @@ def _get_snapshot_bytes(r2, key: str) -> bytes:
     return r2.get_object(Bucket=_BUCKET, Key=key)["Body"].read()
 
 
-def _latest_snapshot_meta(supa, table: str) -> dict[str, Any] | None:
-    """查 backup_snapshots 表该 table 最新一行（sha256/r2_size/create时间），用于校对。"""
-    res = (
-        supa.table("backup_snapshots")
-        .select("r2_key,sha256,r2_size,created_at")
-        .eq("table_name", table)
-        .order("created_at", desc=True)
-        .limit(1)
-        .maybe_single()
-        .execute()
-    )
-    return res.data or None
+def _verify(table: str, raw: bytes, manifest: dict[str, Any] | None) -> tuple[bool, str]:
+    """复算 sha256 + 字节数,对比 R2 manifest 该表登记值。manifest=None/无该表降级放行。
 
-
-def _verify(table: str, raw: bytes, meta: dict[str, Any] | None) -> tuple[bool, str]:
-    """复算 sha256 + 字节数，对比 backup_snapshots 行的登记值。meta=None 视作无登记退化通过。"""
+    manifest-only(D2):元数据不进 Neon backup_snapshots,校对源 = R2 _manifest.json。
+    """
     sha = hashlib.sha256(raw).hexdigest()
     nsize = len(raw)
+    if manifest is None:
+        return True, f"无 manifest(降级放行)sha256={sha}"
+    meta = manifest.get(table)
     if meta is None:
-        # 无登记行（manifest 也缺）：只校 sha256 非空，不强比对——降级放行
-        return True, f"no registry row（降级放行）sha256={sha}"
+        return True, f"manifest 无 {table} 登记(降级放行)sha256={sha}"
     reg_sha = (meta.get("sha256") or "").strip()
-    reg_size = meta.get("r2_size")
+    reg_size = meta.get("bytes")
+    reg_rows = meta.get("rows")
     if not reg_sha:
-        return True, f"无登记 sha256（旧记录降级）实测 sha256={sha} bytes={nsize}"
+        return True, f"无登记 sha256(降级)实测 sha256={sha} bytes={nsize}"
     if sha != reg_sha:
         return False, f"sha256 不符 实测={sha} 登记={reg_sha}"
     if reg_size is not None and reg_size != nsize:
         return False, f"字节数不符 实测={nsize} 登记={reg_size}"
-    return True, f"sha256 匹配 ({sha}) bytes={nsize}"
+    return True, f"sha256 匹配 ({sha}) bytes={nsize} rows={reg_rows}"
 
 
-def _restore_table(r2, supa, table: str, verify_only: bool) -> dict[str, Any]:
-    """单表恢复。返回 {table, rows, verify_ok, msg, restored}。"""
+def _restore_table(r2, manifest, table: str, verify_only: bool) -> dict[str, Any]:
+    """单表恢复。返回 {table, rows, verify_ok, msg, restored}。
+
+    写回用 Neon HTTP /sql INSERT ... ON CONFLICT (pk) DO UPDATE SET。
+    jsonb 列回写需 $N::jsonb 强转(row_to_json 序列化为字符串)。
+    task_logs(bigserial 代理键)不写回(保持 _SAFE_RESTORE 语义)。
+    """
     out: dict[str, Any] = {"table": table, "rows": 0, "verify_ok": False, "restored": False}
     key = f"supabase-snapshot/{table}.json"
     try:
@@ -123,70 +168,97 @@ def _restore_table(r2, supa, table: str, verify_only: bool) -> dict[str, Any]:
         return out
     rows = json.loads(raw)
     out["rows"] = len(rows)
-    # 完整性校验（比对 backup_snapshots 登记行 + manifest 一致性）
-    meta = _latest_snapshot_meta(supa, table)
-    ok, msg = _verify(table, raw, meta)
+    # 完整性校验(比对 R2 manifest 登记)
+    ok, msg = _verify(table, raw, manifest)
     out["verify_ok"] = ok
     out["msg"] = msg
     if not ok:
-        return out  # 校验失败拒绝写回，防坏数据覆盖好数据
+        return out  # 校验失败拒绝写回,防坏数据覆盖好数据
     if verify_only:
         return out
     if not rows:
-        out["msg"] = "空快照，跳过写回（防把表清空）"
+        out["msg"] = "空快照,跳过写回(防把表清空)"
         return out
-    # 主键 upsert 覆盖（仅业务表）；代理键表暂不恢复（见 _SAFE_RESTORE 说明）
     pk = _PK.get(table)
     if table not in _SAFE_RESTORE:
-        out["msg"] = f"恢复≈写回暂未支持该表类型 (pk={pk})；仅校验通过"
+        out["msg"] = f"恢复≈写回暂未支持该表类型 (pk={pk});仅校验通过"
         return out
     if not pk:
-        out["msg"] = "该表无可用主键列，跳过写回"
+        out["msg"] = "该表无可用主键列,跳过写回"
+        return out
+    cols = _COLS.get(table)
+    if not cols:
+        out["msg"] = f"无列定义({table}),跳过写回"
         return out
     try:
-        # upsert：service_role 绕 RLS；on_conflict 主键覆盖（恢复语义：备份即真相）
-        supa.table(table).upsert(rows, on_conflict=pk).execute()
+        # 逐行 upsert via Neon HTTP /sql。
+        # 列序:pk + cols(jsonb 列 $N::jsonb 强转 row_to_json 字符串回 jsonb)。
+        col_names = [pk] + [c[0] for c in cols]
+        placeholders = ["$1"] + [f"${i + 2}::jsonb" if c[1] == "jsonb" else f"${i + 2}"
+                                for i, c in enumerate(cols)]
+        update_set = ", ".join(f"{c[0]} = EXCLUDED.{c[0]}" for c in cols)
+        sql = (
+            f'INSERT INTO public."{table}" ({", ".join(col_names)}) '
+            f"VALUES ({', '.join(placeholders)}) "
+            f"ON CONFLICT ({pk}) DO UPDATE SET {update_set}"
+        )
+        for row in rows:
+            params = [row.get(pk)]
+            for c, _ in cols:
+                v = row.get(c[0])
+                # jsonb 列:row_to_json 序列化为字符串,回写 $N::jsonb 还原;无值用 '{}' 兜底
+                if c[1] == "jsonb":
+                    if v is None:
+                        v = "{}"
+                    elif not isinstance(v, str):
+                        v = json.dumps(v, ensure_ascii=False, default=str)
+                params.append(v)
+            _neon_query(sql, params)
         out["restored"] = True
+        out["msg"] = f"写回 {len(rows)} 行 → Neon public.\"{table}\""
     except Exception as e:  # noqa: BLE001
         out["msg"] = f"写回失败: {e}"
     return out
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="R2 → Supabase 反向恢复")
+    p = argparse.ArgumentParser(description="R2 → Neon 反向恢复")
     p.add_argument("--all", action="store_true", help="恢复全部表")
     p.add_argument("--table", help="仅恢复指定表")
-    p.add_argument("--list", action="store_true", help="列 manifest 内容（只读，不恢复）")
+    p.add_argument("--list", action="store_true", help="列 manifest 内容(只读,不恢复)")
     p.add_argument("--verify-only", action="store_true", help="仅校验 sha256 不写回")
     args = p.parse_args()
 
     if not (args.all or args.table or args.list):
         p.error("需指定 --all / --table <name> / --list 之一")
 
-    if not (os.getenv("R2_ENDPOINT") and os.getenv("SUPABASE_URL")):
-        print("R2_ENDPOINT / SUPABASE_URL 未配置，无法恢复", flush=True)
+    if not (os.getenv("R2_ENDPOINT") and os.getenv("POSTGRES_HOST")):
+        print("R2_ENDPOINT / POSTGRES_HOST 未配置,无法恢复", flush=True)
         return 2
 
-    r2, supa = _r2(), _supa()
+    r2 = _r2()
 
     if args.list:
         m = _get_manifest(r2)
         if m is None:
-            print(f"（R2 无 manifest 对象 {_MANIFEST_KEY}；可能首次快照未运行或 bucket 不一致）", flush=True)
+            print(f"(R2 无 manifest 对象 {_MANIFEST_KEY};可能首次快照未运行或 bucket 不一致)", flush=True)
             return 0
         print(json.dumps(m, ensure_ascii=False, indent=2), flush=True)
         return 0
 
     tables = _TABLES if args.all else [args.table]
     if args.table and args.table not in _TABLES and not _PK.get(args.table):
-        print(f"未知表 {args.table}（已知表：{', '.join(_TABLES)}）", flush=True)
+        print(f"未知表 {args.table}(已知表:{', '.join(_TABLES)})", flush=True)
         return 2
+
+    # manifest 一次性取,校验复用(manifest-only D2)
+    manifest = _get_manifest(r2)
 
     overall_ok = True
     for t in tables:
         if t is None:
             continue
-        res = _restore_table(r2, supa, t, verify_only=args.verify_only)
+        res = _restore_table(r2, manifest, t, verify_only=args.verify_only)
         tag = "OK" if (res["verify_ok"] and (res["restored"] or args.verify_only)) else "FAIL"
         if not res["verify_ok"]:
             overall_ok = False

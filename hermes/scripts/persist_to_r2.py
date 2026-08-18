@@ -1,18 +1,23 @@
-"""R2 + Supabase 双写持久化同步。
+"""R2 快照备份层(Neon 读源,2026-08-18 重构)。
 
-借鉴 HermesFace 的 hermes_persist.py / HuggingMes 的 hermes-sync.py，
-改为：结构化状态读自 Supabase → 周期性快照写 R2（原子覆盖）。
-解决 HF Space 重启 / 休眠导致本地数据丢失（本方案核心数据已在 R2/Supabase，
-此脚本再做一层 Supabase→R2 的备份快照，双保险）。
+原链(2026-08 前):Supabase 读 → R2 快照(双保险)。
+2026-08-17 Supabase→Neon 全量迁移后 R2 daemon 切走,本脚本变死 code。
+2026-08-18 恢复 R2 作快照备份层:**读源从 Supabase 改 Neon**(HTTP /sql 端点),
+R2 作副路快照,boto3 原子上传 + manifest.json 索引 + sha256 完整性校验全保留。
 
-环境变量：
+与 persist_to_neon.py(主路)正交:
+  - persist_to_neon.py = hermes 内部写 Neon 四表(主路持久)
+  - 本脚本 = Neon 四表 → R2 JSON 快照(副路备份,灾备/审计)
+  - 两 daemon 互独立,POSTGRES_HOST 单有 → 只主路;加 R2_ENDPOINT → 双起
+
+元数据(manifest-only):sha256/bytes/rows/updated_at 全放 R2 `_manifest.json`,
+**不进 Neon backup_snapshots 表**(Neon schema 不倒退,schema 七表已砍 backup_snapshots)。
+
+环境变量:
   R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
   R2_BUCKET        (默认 nexus-checkpoints; 统一桶名)
-  SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
-  SYNC_INTERVAL_SEC (默认 300 = 5分钟)
-
-完整性校验（#25）：每个 snapshot 上传后算 sha256 + 字节数，
-写进 backup_snapshots 表与 R2 manifest 对象；restore 时复算比对。
+  POSTGRES_HOST / POSTGRES_PORT / POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+  SYNC_INTERVAL_SEC (默认 1800 = 30分钟,快照层低频 R2 Class A 写 9600/天 << 免费额)
 """
 from __future__ import annotations
 
@@ -25,15 +30,15 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any
 
-sys.path.insert(0, "/data/libs")  # Bucket 挂载点;Space 内 PYTHONPATH 已设，本地调试兜底
+sys.path.insert(0, "/data/libs")  # Bucket 挂载点;Space 内 PYTHONPATH 已设,本地调试兜底
 import boto3  # noqa: E402
+import httpx  # noqa: E402
 from botocore.config import Config  # noqa: E402
-from supabase import create_client  # noqa: E402
 
-_INTERVAL = int(os.getenv("SYNC_INTERVAL_SEC", "300"))
+_INTERVAL = int(os.getenv("SYNC_INTERVAL_SEC", "1800"))
 _BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
-# manifest 索引对象 key（R2 内单文件，列各表最新快照 sha256/size，便于 restore 找最新）
+# manifest 索引对象 key(R2 内单文件,列各表最新快照 sha256/size,便于 restore 找最新)
 _MANIFEST_KEY = "supabase-snapshot/_manifest.json"
 
 
@@ -43,14 +48,18 @@ def _env_diag() -> dict[str, bool]:
         "R2_ENDPOINT": bool(os.getenv("R2_ENDPOINT")),
         "R2_ACCESS_KEY_ID": bool(os.getenv("R2_ACCESS_KEY_ID")),
         "R2_SECRET_ACCESS_KEY": bool(os.getenv("R2_SECRET_ACCESS_KEY")),
-        "SUPABASE_URL": bool(os.getenv("SUPABASE_URL")),
-        "SUPABASE_SERVICE_ROLE_KEY": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")),
-        "SUPABASE_ANON_KEY": bool(os.getenv("SUPABASE_ANON_KEY")),
+        "POSTGRES_HOST": bool(os.getenv("POSTGRES_HOST")),
+        "POSTGRES_PORT": bool(os.getenv("POSTGRES_PORT", "5432")),
+        "POSTGRES_USER": bool(os.getenv("POSTGRES_USER")),
+        "POSTGRES_PASSWORD": bool(os.getenv("POSTGRES_PASSWORD")),
+        "POSTGRES_DB": bool(os.getenv("POSTGRES_DB", "neondb")),
     }
 
 
 def _r2():
-    client = boto3.client(
+    if not os.getenv("R2_ACCESS_KEY_ID") or not os.getenv("R2_SECRET_ACCESS_KEY"):
+        raise RuntimeError("[_r2] R2_ACCESS_KEY_ID or R2_SECRET_ACCESS_KEY empty (HF Secrets missing)")
+    return boto3.client(
         "s3",
         endpoint_url=os.getenv("R2_ENDPOINT"),
         aws_access_key_id=os.getenv("R2_ACCESS_KEY_ID", ""),
@@ -58,32 +67,79 @@ def _r2():
         region_name=os.getenv("R2_REGION", "auto"),
         config=Config(connect_timeout=5, read_timeout=30, retries={"max_attempts": 3}),
     )
-    if not os.getenv("R2_ACCESS_KEY_ID") or not os.getenv("R2_SECRET_ACCESS_KEY"):
-        raise RuntimeError("[_r2] R2_ACCESS_KEY_ID or R2_SECRET_ACCESS_KEY empty (HF Secrets missing)")
-    return client
 
 
-def _supa():
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
-    if not os.getenv("SUPABASE_URL") or not key:
-        raise RuntimeError("[_supa] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY empty (HF Secrets missing)")
-    return create_client(os.getenv("SUPABASE_URL", ""), key)
+# ── Neon HTTP /sql 读源(复制 persist_to_neon.py 同款) ──────────────────────────
+def _conn_str() -> str:
+    """构建 Neon 连接串(用于 Neon-Connection-String header)。"""
+    host = os.getenv("POSTGRES_HOST", "")
+    if not host:
+        raise RuntimeError("[neon] POSTGRES_HOST empty (HF Secrets missing)")
+    # Neon HTTP /sql 要求 non-pooler host(strip -pooler suffix)
+    if host.endswith("-pooler"):
+        host = host[: -len("-pooler")]
+    user = os.getenv("POSTGRES_USER", "")
+    password = os.getenv("POSTGRES_PASSWORD", "")
+    db = os.getenv("POSTGRES_DB", "neondb")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    return f"postgresql://{user}:{password}@{host}:{port}/{db}?sslmode=require"
 
 
-def _snapshot_table(supa, table: str) -> list[dict[str, Any]]:
-    res = supa.table(table).select("*").execute()
-    return res.data or []
+def _sql_url() -> str:
+    """Neon HTTP /sql endpoint URL。"""
+    host = os.getenv("POSTGRES_HOST", "")
+    if not host:
+        raise RuntimeError("[neon] POSTGRES_HOST empty (HF Secrets missing)")
+    if host.endswith("-pooler"):
+        host = host[: -len("-pooler")]
+    return f"https://{host}/sql"
+
+
+def _neon_query(query: str, params: list | None = None) -> list[dict]:
+    """执行单条 SQL via Neon HTTP /sql 端点。每次 = 独立 HTTP POST,完即断,不占连接。"""
+    headers = {
+        "Neon-Connection-String": _conn_str(),
+        "Content-Type": "application/json",
+    }
+    body: dict[str, Any] = {"query": query}
+    if params:
+        body["params"] = params
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(_sql_url(), headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        # Neon /sql 返回 {"rows": [...]} 或 {"command": "...", "row_count": N}
+        if isinstance(data, dict) and "rows" in data:
+            return data["rows"]
+        return []
+
+
+def _snapshot_table_neon(table: str) -> list[dict[str, Any]]:
+    """读 Neon 单表全行 → dict 列表。
+
+    注意:
+      - task_logs 累积大超 30s timeout 风险 → ORDER BY id DESC LIMIT 10000 截断(已知风险)
+      - row_to_json 对 jsonb 列序列化为字符串而非嵌套对象;persist 端 json.dumps 后整串存,
+        restore 端需 json.loads 透传(jsonb 列以字符串形式存快照,读回 Neon 时 $1::jsonb 还原)
+    """
+    if table == "task_logs":
+        q = f'SELECT row_to_json(t) AS row FROM public."{table}" t ORDER BY id DESC LIMIT 10000'
+    else:
+        q = f'SELECT row_to_json(t) AS row FROM public."{table}" t'
+    rows = _neon_query(q)
+    # row_to_json 返回 {"row": {...}},提取
+    return [r["row"] if isinstance(r, dict) and "row" in r else r for r in rows]
 
 
 def _atomic_upload(r2, key: str, body: bytes) -> None:
-    """原子上传：先写 tmp key 再 copy 到目标 key。
-    借鉴 HermesFace save_to_dataset_atomic 思路（HF Dataset 无原子写，R2 用 copy 模拟）。
+    """原子上传:先写 tmp key 再 copy 到目标 key。
+    借鉴 HermesFace save_to_dataset_atomic 思路(HF Dataset 无原子写,R2 用 copy 模拟)。
     避免读到写一半的文件。
     """
     tmp = f"_tmp/{key}.partial"
     r2.put_object(Bucket=_BUCKET, Key=tmp, Body=body)
-    # R2 CopyObject 属 Class A 操作（计费），仅 Class B 出口免费。
-    # 生产需注意额度：4 表 × 每次三步 ≈ 10 万 Class A/月仍属免费层 (100 万/月) 内。
+    # R2 CopyObject 属 Class A 操作(计费),仅 Class B 出口免费。
+    # 生产需注意额度:4 表 × 每次三步 ≈ 10 万 Class A/月仍属免费层 (100 万/月) 内。
     r2.copy_object(
         Bucket=_BUCKET,
         Key=key,
@@ -93,27 +149,26 @@ def _atomic_upload(r2, key: str, body: bytes) -> None:
 
 
 def _now_iso() -> str:
-    """UTC ISO8601 时间戳（datetime 真实可用，与 errors.log_event 一致）。"""
+    """UTC ISO8601 时间戳(datetime 真实可用,与 errors.log_event 一致)。"""
     return datetime.now(timezone.utc).isoformat()
 
 
 def sync_once() -> dict[str, Any]:
     r2 = _r2()
-    supa = _supa()
     counts: dict[str, Any] = {}
     manifest: dict[str, Any] = {}
     ts = _now_iso()
     for t in _TABLES:
         try:
-            rows = _snapshot_table(supa, t)
+            rows = _snapshot_table_neon(t)
         except Exception as e:  # noqa: BLE001
-            counts[f"{t}_supa_err"] = f"[{type(e).__name__}] {e}"
+            counts[f"{t}_neon_err"] = f"[{type(e).__name__}] {e}"
             continue
         try:
             body = json.dumps(rows, ensure_ascii=False, default=str).encode()
             key = f"supabase-snapshot/{t}.json"
             _atomic_upload(r2, key, body)
-            # 完整性校验和：sha256 + 字节数；restore 时复算比对挡 R2 静默损坏/截断
+            # 完整性校验和:sha256 + 字节数;restore 时复算比对挡 R2 静默损坏/截断
             sha = hashlib.sha256(body).hexdigest()
             counts[t] = {"rows": len(rows), "sha256": sha, "bytes": len(body)}
             manifest[t] = {
@@ -126,18 +181,8 @@ def sync_once() -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             counts[f"{t}_r2_err"] = f"[{type(e).__name__}] {e}"
             continue
-        try:
-            # 登记 backup_snapshots 元数据（恢复时按 table_name + created_at 定位快照）
-            supa.table("backup_snapshots").insert({
-                "table_name": t,
-                "r2_key": key,
-                "row_count": len(rows),
-                "sha256": sha,
-                "r2_size": len(body),
-            }).execute()
-        except Exception as e:  # noqa: BLE001
-            counts[f"{t}_backupmeta_err"] = f"[{type(e).__name__}] {e}"
-    # 写 manifest 索引（各表最新 sha256/size），便于 restore 一步定位 + 完整性校对
+    # 写 manifest 索引(各表最新 sha256/size + rows + updated_at),便于 restore 一步定位 + 完整性校对
+    # manifest-only:元数据不进 Neon backup_snapshots 表(D2 决策)。
     if manifest:
         try:
             _atomic_upload(r2, _MANIFEST_KEY, json.dumps(manifest, ensure_ascii=False).encode())
@@ -148,23 +193,36 @@ def sync_once() -> dict[str, Any]:
 
 
 def main() -> None:
-    print(f"[persist] start, interval={_INTERVAL}s, bucket={_BUCKET}", flush=True)
-    print(f"[persist] env diag={_env_diag()}", flush=True)
+    # boot 门控:R2_* + POSTGRES_* 四 presence 缺则 raise(real-start.sh 门控 skip 不进 main)
+    missing = [
+        k for k, v in _env_diag().items()
+        if not v and k in ("R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "POSTGRES_HOST")
+    ]
+    if missing:
+        raise RuntimeError(f"[persist-r2] boot gate fail, missing env: {missing}")
+    print(f"[persist-r2] start, interval={_INTERVAL}s, bucket={_BUCKET}", flush=True)
+    print(f"[persist-r2] env diag={_env_diag()}", flush=True)
+    # 首次 Neon 连接测试
+    try:
+        rows = _neon_query("SELECT 1 AS ok")
+        print(f"[persist-r2] Neon HTTP /sql connection OK: {rows}", flush=True)
+    except Exception as e:
+        print(f"[persist-r2] Neon HTTP /sql connection FAILED: {e}", flush=True)
     while True:
         try:
             res = sync_once()
-            print(f"[persist] synced {res}", flush=True)
+            print(f"[persist-r2] synced {res}", flush=True)
         except Exception as e:  # noqa: BLE001
             etype = type(e).__name__
             msg = str(e)
             src = "?"
             if msg.startswith("[_r2]"):
                 src = "R2"
-            elif msg.startswith("[_supa]"):
-                src = "SUPA"
+            elif msg.startswith("[neon]"):
+                src = "NEON"
             tb = traceback.format_exc().splitlines()
             tb_short = " | ".join(tb[-3:]) if len(tb) >= 3 else " | ".join(tb)
-            print(f"[persist] fatal[{src}/{etype}] {msg} | tb={tb_short} | env={_env_diag()}", flush=True)
+            print(f"[persist-r2] fatal[{src}/{etype}] {msg} | tb={tb_short} | env={_env_diag()}", flush=True)
         time.sleep(_INTERVAL)
 
 

@@ -33,15 +33,19 @@ GitHub i3t2y/nexus (版本化真源, public)
 
 ## Neon 表结构
 - `memories` — mem0 记忆 (pgvector 2048维, hnsw=False)
-- `agent_states` / `task_logs` / `long_memory` / `skills_index` — hermes 结构化四表
+- `agent_states` / `task_logs` / `long_memory` / `skills_index` — hermes 结构化四表 (主路 persist_to_neon.py + 副路 R2 快照)
 - `task_queue` / `space_health` — 辅助表
+- 不含 `backup_snapshots` (R2 副路 manifest-only 不走 DB)
 - DDL: `docs/neon-schema.sql` (幂等, 不需要 RLS)
 
-## 状态 (2026-08-17)
-- ✅ memlg Space RUNNING, /health ok
+## 状态 (2026-08-18)
+- ✅ memlg Space RUNNING, /health ok (不碰 Neon, let it scale-to-zero)
 - ✅ Neon memories 表有数据
 - ✅ Actions run #9 success (两 job 分开跑通)
 - ✅ Bucket nmem/logic 挂载 rw
+- ✅ 2026-08-17 Neon Free 保活反策略落地 (persist_to_neon httpx /sql 短请求 + /health 不碰 Neon, commit 3fbd846)
+- ✅ 2026-08-18 R2 副路恢复 (persist_to_r2.py 读源 Supabase→Neon, 与 Neon 主路双写)
 - ⏳ Neon 七表 DDL 待执行 (neon-schema.sql)
-- ⏳ hermes Space 待加 POSTGRES_* Secrets + 删 Supabase/R2 Secrets
-- ⏳ hermes Space 待重启 (让 mem0.json self_hosted + POSTGRES_HOST 生效)
+- ⏳ hermes Space 待加 POSTGRES_* Secrets (主路+R2 副路共用) + R2_* Secrets (副路灾备)
+- ⏳ hermes Space 待删旧 SUPABASE_* + MEM0_PG_URI Secrets
+- ⏳ hermes Space 待重启 (让 mem0.json self_hosted + Neon 主路 + R2 副路生效)

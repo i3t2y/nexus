@@ -1,21 +1,27 @@
-# 三件套统一架构 (2026-08-17)
+# 三件套统一架构 (2026-08-18)
 
 ## 三件套
 ```
 ┌─────────────────────────────────────────────────────┐
 │  hermes (sonoke/h)    云上大脑: 入口/路由/调度       │
 │  └→ mem0 (self_hosted) → MEM0_HOST → memlg Space     │
-│  └→ persist_to_neon.py → Neon 四表                   │
+│  └→ persist_to_neon.py 主路 → Neon 四表             │
+│  └→ persist_to_r2.py 副路 → Neon 读 → R2 快照备份   │
 ├─────────────────────────────────────────────────────┤
 │  memgraph (nmem/memlg) 记忆+编排                    │
 │  └→ mem0 server → Neon memories 表 (pgvector)       │
 │  └→ LangGraph worker (进程内)                       │
 ├─────────────────────────────────────────────────────┤
-│  Neon Postgres  数据持久化                           │
+│  Neon Postgres  数据持久化 (主路)                    │
 │  └→ memories 表 (mem0, pgvector 2048维)             │
 │  └→ agent_states / task_logs / long_memory /        │
 │    skills_index (hermes 结构化四表)                  │
 │  └→ task_queue / space_health (辅助)                │
+├─────────────────────────────────────────────────────┤
+│  Cloudflare R2  灾备快照层 (副路)                    │
+│  └→ supabase-snapshot/{四表}.json                   │
+│  └→ _manifest.json (sha256/bytes/rows, manifest-only)│
+│  └→ 读源 = Neon HTTP /sql (2026-08-18 恢复)          │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -24,29 +30,34 @@
 用户 → Telegram → hermes (sonoke/h)
   → mem0_search/mem0_add → SelfHostedBackend → HTTP → memlg Space
     → mem0 server → Neon memories (pgvector 语义搜索)
-  → persist_to_neon.py (后台) → Neon 四表 (结构化状态)
+  → persist_to_neon.py 主路 (后台 600s) → Neon 四表 (结构化状态)
+  → persist_to_r2.py 副路 (后台 1800s) → Neon 读 → R2 快照备份
 
 保活:
-  cron-job.org (每4min) → memlg /health → Neon SELECT 1
+  cron-job.org (每4min) → memlg /health (不碰 Neon, let it scale-to-zero)
 ```
 
 ## 存储
 | 层 | 内容 | 存储 | 持久化方式 |
 |---|---|---|---|
 | mem0 记忆 | 向量记忆 | Neon memories 表 | Neon 持久化 (scale-to-zero auto-wake) |
-| hermes 结构化 | 四表状态 | Neon | persist_to_neon.py 直连 |
+| hermes 结构化 (主路) | 四表状态 | Neon | persist_to_neon.py 直连 (600s) |
+| hermes 结构化 (副路) | 四表快照 | R2 对象存储 | persist_to_r2.py 读 Neon 写 R2 (1800s, manifest-only) |
 | 三文件 | Dockerfile+README+start.sh | HF Space git repo | Actions 推 (不频繁改) |
 | 逻辑层 | scripts/app/libs/plugins | HF Bucket (rw 挂载) | Actions sync |
 | home 文件 | .env/SOUL.md/config.yaml | HF Bucket home-backups/ | restore+uploader 周期 |
 | state.db | 会话历史 | 本地盘+Bucket快照 | restore_state+state_uploader |
 | 代码版本 | 全部 | GitHub i3t2y/nexus (public) | git push |
-| Secrets | Postgres/API keys | HF Space Secrets | 零文件持久化 |
+| Secrets | Postgres/R2/API keys | HF Space Secrets | 零文件持久化 |
 
-## Supabase → Neon 迁移 (2026-08-17)
+## Supabase → Neon 迁移 (2026-08-17) + R2 副路恢复 (2026-08-18)
 - **原**: mem0 oss mode 直连 Supabase pgvector + persist_to_r2.py 四表 Supabase→R2 双写
-- **新**: mem0 self_hosted → memlg Space → Neon memories + persist_to_neon.py 直连 Neon 四表
-- **砍掉**: Supabase (7天暂停风险) + R2 (Neon 已持久化不需要额外快照) + MEM0_PG_URI
-- **DDL**: `memgraph/docs/neon-schema.sql` (七表幂等, 无 RLS)
+- **2026-08-17**: mem0 self_hosted → memlg Space → Neon memories + persist_to_neon.py 直连 Neon 四表 (主路)
+- **2026-08-17 砍掉**: Supabase (7天暂停风险) + MEM0_PG_URI; R2 当时一并砍 (Neon 已持久化)
+- **2026-08-18 R2 副路恢复**: persist_to_r2.py 读源 Supabase→Neon (HTTP /sql), R2 作灾备快照层
+  与 Neon 主路双写,manifest-only 不进 DB (sha256/bytes/rows 放 R2 _manifest.json)
+- **现役持久化**: Neon (主路持久) + R2 (副路灾备快照) 双层;Supabase 全退役
+- **DDL**: `memgraph/docs/neon-schema.sql` (七表幂等, 无 RLS, 不含 backup_snapshots)
 
 ## 部署链
 ```

@@ -39,7 +39,8 @@ fi
 #   → SQLite corruption(官方实证 SQLite 不允许他进程并发改文件)。本地盘 ext4
 #   无 FUSE 无旁路 → WAL 稳定。两实战项目(HermesFace+HuggingMes)同用 /opt/data 本地 SQLite 0 malformed。
 # 代价:重启丢 dashboard 会话历史(transient state.db);核心四表(agent_states/
-#   task_logs/long_memory/skills_index)在 Supabase+R2 双写(persist_to_r2.py)不丢,AI 长期记忆不丢。
+#   task_logs/long_memory/skills_index)在 Neon(persist_to_neon.py 主路)+ R2 快照
+#   (persist_to_r2.py 副路,2026-08-18 恢复读源=Neon)双写不丢,AI 长期记忆不丢。
 mkdir -p "$LOG_DIR" 2>/dev/null || echo "[real-start] WARN: mkdir $LOG_DIR failed (mount not ready?)"
 mkdir -p /opt/data 2>/dev/null || echo "[real-start] WARN: mkdir /opt/data failed"
 export HERMES_HOME="$HERMES_HOME"
@@ -101,7 +102,8 @@ else
 fi
 
 # A 方案后 litestream 全段弃(state.db 移出 bucket FUSE 本地盘,无旁路进程干扰 WAL,
-#   SQLite 复一致稳定;持久化靠 persist_to_r2.py 核心四表 Supabase+R2,不靠 state.db 快照)。
+#   SQLite 复一致稳定;持久化靠 persist_to_neon.py 核心四表主路 + persist_to_r2.py
+#   R2 快照副路(2026-08-18 恢复读源=Neon),不靠 state.db 快照)。
 
 echo "[real-start] replay packages..."
 python "$APP_DIR/scripts/replay_packages.py" replay || echo "[real-start] replay skipped (no log yet)"
@@ -110,18 +112,21 @@ python "$APP_DIR/scripts/replay_packages.py" replay || echo "[real-start] replay
 # 双盘分离治本:state.db 真值源在线写 /opt/data 本地盘(WAL 稳),Bucket 纯当离线快照仓库:
 #   state_db_uploader.py 周期(默认 300s)hf buckets cp 推 bucket/state-backups/state.db;
 #   restore_state.py 首启从该 path 拉回。两盘分开=旧 malformed 雷(FUSE+litestream 并发改 WAL)消除。
-# 与 persist_to_r2.py(织 Supabase→R2 四结构化表)正交:本层只管 state.db 整库快照(会话历史索引)。
+# 与 persist_to_neon.py(Neon 四结构化表主路)+ persist_to_r2.py(Neon→R2 快照副路,
+#   2026-08-18 恢复读源=Neon)正交:本层只管 state.db 整库快照(会话历史索引)。
 # 拉回须在 hermes boot 前(boot 期 hermes 起 state.db 写锁,先拉避免抢锁)。
 # 凭证 HF_TOKEN+HF_OWNER+NEXUS_LOGIC_BUCKET(不补则脚本自降级 no-op,会话历史重启丢但 hermes 照起)。
 if [ -f "$APP_DIR/scripts/restore_state.py" ]; then
   python "$APP_DIR/scripts/restore_state.py" 2>&1 | sed 's/^/[real-start] /'
 fi
 
-# 后台:Neon 持久化同步(结构化四表直接写 Neon, 2026-08-17 替代 Supabase+R2 双写)
+# 后台:Neon 持久化同步主路(结构化四表直接写 Neon, 2026-08-17 替代旧 Supabase+R2)
 # ★2026-08-17 HTTP /sql 重构: psycopg2 → httpx 裸调 Neon /sql 端点
 #   - 每次 query = 独立 HTTP POST, 完即断, 不占 TCP 连接 → Neon 自然 scale-to-zero
 #   - SYNC_INTERVAL_SEC 默认 600s (> Neon Free 5min auto-suspend → 保证 suspend)
 #   - CU-h ~0.5-3/月 (vs 原 psycopg2 长连接 180 CU-h/月超额)
+# ★2026-08-18 R2 副路恢复: persist_to_r2.py 读源改 Neon(HTTP /sql),R2 作快照备份层。
+#   两 daemon 互独立:POSTGRES_HOST 单有 → 只 Neon 主路 600s;加 R2_ENDPOINT → 双起 1800s。
 if [ -n "${POSTGRES_HOST:-}" ]; then
   export SYNC_INTERVAL_SEC="${SYNC_INTERVAL_SEC:-600}"
   echo "[real-start] persist-neon daemon up (→ Neon ${POSTGRES_HOST}/${POSTGRES_DB:-neondb}, interval=${SYNC_INTERVAL_SEC}s, HTTP /sql mode)"
@@ -130,7 +135,19 @@ else
   echo "[real-start] persist-neon daemon skip (need POSTGRES_HOST)"
 fi
 
-# 后台:state.db → HF Bucket 快照(会话历史持久,防重启丢)
+# 后台:Neon → R2 快照备份副路(★2026-08-18 恢复,读源=Neon HTTP /sql 正交主路)
+# R2 作灾备快照层:persist_to_r2.py 周期读 Neon 四表 → 原子上传 R2 JSON snapshot +
+#   _manifest.json(manifest-only,不进 Neon backup_snapshots 表)。restore_from_r2.py 反向闭环。
+# 门控:R2_ENDPOINT + R2_ACCESS_KEY_ID + POSTGRES_HOST 三 presence 缺则 skip WARN(不 fail boot)。
+#   POSTGRES_HOST 单有→只 Neon 主路 600s;加 R2_ENDPOINT→双起 R2 副路 1800s(30min,快照层低频)。
+#   R2 Class A 写 4 表×3 步/次×48 次/天 ≈ 9600/天 << 免费额 1000万/月。
+if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ] && [ -n "${POSTGRES_HOST:-}" ]; then
+  export SYNC_INTERVAL_SEC="${SYNC_INTERVAL_SEC:-1800}"
+  echo "[real-start] persist-r2 snapshot daemon up (→ R2 ${R2_BUCKET:-nexus-checkpoints}/supabase-snapshot/, source=Neon, interval=${SYNC_INTERVAL_SEC}s)"
+  nohup python "$APP_DIR/scripts/persist_to_r2.py" >"${LOG_DIR:-/opt/data/logs}/persist-r2.log" 2>&1 &
+else
+  echo "[real-start] persist-r2 snapshot daemon skip (need R2_ENDPOINT+R2_ACCESS_KEY_ID+POSTGRES_HOST)"
+fi
 # 缺 HF_TOKEN/HF_OWNER/NEXUS_LOGIC_BUCKET 任则跳(脚本内亦自降级 no-op)。
 if [ -n "${HF_TOKEN:-}" ] && [ -n "${HF_OWNER:-}" ] && [ -n "${NEXUS_LOGIC_BUCKET:-}" ]; then
   echo "[real-start] state-db upload daemon up (→ bucket ${HF_OWNER}/${NEXUS_LOGIC_BUCKET}/state-backups)"
