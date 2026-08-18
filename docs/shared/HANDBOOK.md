@@ -1,5 +1,9 @@
 # Nexus 接手手册（Handbook）
 
+> ⚠️ **本手册整体为旧自建框壳阶段(2026-07 ~ 08-02)文档,L2026-08-02 hermes 改全原生 NousResearch Hermes Agent 三组件 + 2026-08-17 Supabase→Neon 迁移 + 2026-08-18 R2 副路恢复后,大半内容已过时**(自建 main.py /run /enqueue 端点 / Gradio Dashboard Tab / libs/storage R2+Supabase 封装 / persist_to_r2.py "Supabase→R2 双写" 述文 / Supabase 结构化四表主路 等均属旧态)。
+> **真态权威件**:`docs/hermes/hermes-换装实况.md`(hermes 现役三组件)+ `docs/shared/ARCHITECTURE.md` 顶部"`三件套统一架构 (2026-08-18)`"(持久化双路 Neon 主路 + R2 副路灾备快照)+ `docs/shared/CREDENTIALS.md`(Neon/R2 active,Supabase archived)。本手册仅留作旧框架历史回溯,部署/维护**勿取本手册,取上三件**。
+> §3.1/§6 表内自建框壳描述 + L112-113 persist_to_r2/restore Supabase 述文 + §4 存储层 Supabase 主路 = 均已推翻,见 L17/§1 内联旧推翻注作局部指针。
+
 > 目的：任何人或 AI 零上下文读此一份文档，即可理解、部署、维护、二次开发 Nexus 系统。
 > 配套源码在 `nexus/` 仓库根。文档另见 `ARCHITECTURE.md` / `COMMUNICATION.md` / `DEPLOYMENT.md` / `CREDENTIALS.md`，本手册是它们的浓缩 + 自包含总集。
 

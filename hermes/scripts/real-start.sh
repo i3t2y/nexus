@@ -142,8 +142,8 @@ fi
 #   POSTGRES_HOST 单有→只 Neon 主路 600s;加 R2_ENDPOINT→双起 R2 副路 1800s(30min,快照层低频)。
 #   R2 Class A 写 4 表×3 步/次×48 次/天 ≈ 9600/天 << 免费额 1000万/月。
 if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ] && [ -n "${POSTGRES_HOST:-}" ]; then
-  export SYNC_INTERVAL_SEC="${SYNC_INTERVAL_SEC:-1800}"
-  echo "[real-start] persist-r2 snapshot daemon up (→ R2 ${R2_BUCKET:-nexus-checkpoints}/supabase-snapshot/, source=Neon, interval=${SYNC_INTERVAL_SEC}s)"
+  export R2_SYNC_INTERVAL_SEC="${R2_SYNC_INTERVAL_SEC:-1800}"
+  echo "[real-start] persist-r2 snapshot daemon up (→ R2 ${R2_BUCKET:-nexus-checkpoints}/supabase-snapshot/, source=Neon, interval=${R2_SYNC_INTERVAL_SEC}s)"
   nohup python "$APP_DIR/scripts/persist_to_r2.py" >"${LOG_DIR:-/opt/data/logs}/persist-r2.log" 2>&1 &
 else
   echo "[real-start] persist-r2 snapshot daemon skip (need R2_ENDPOINT+R2_ACCESS_KEY_ID+POSTGRES_HOST)"

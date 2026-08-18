@@ -1,5 +1,10 @@
 # Hermes Agent 换装方案落地文档
 
+> ⚠️ **本文为换装期中间态方案裁决件,多述已被后续实况推翻**:
+> - "保留 Gradio+FastAPI 框壳 + agent_server.py" → 半推翻(全原生三组件,见 [`hermes-换装实况.md`](./hermes-换装实况.md) §2)
+> - `persist_to_r2.py` "Supabase→R2 四表灾备"+ R2 litestream 接力 + "Supabase+R2 双写" → **已旧**(2026-08-17 Supabase→Neon 主路 + 2026-08-18 R2 副路恢复读源=Neon,见换装件 §10.7)
+> 现役真态权威取 [`hermes-换装实况.md`](./hermes-换装实况.md) + [`docs/shared/ARCHITECTURE.md`](../shared/ARCHITECTURE.md)。本件仅留作换装决策历史回溯。
+
 > 永续改造:spaces/hermes/ 内核从自建关键词 route 主控换装为 NousResearch Hermes Agent(github.com/NousResearch/hermes-agent),保四 Space 协同结构。本文是方案裁决 + 实装记录。
 
 ## 0. 定局依据(用户 2026-07-31 拍板)

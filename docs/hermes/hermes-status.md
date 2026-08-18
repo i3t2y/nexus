@@ -36,7 +36,7 @@ Cloudflare R2 (灾备快照副路, 2026-08-18 恢复)
 ## Supabase → Neon 迁移 (2026-08-17) + R2 副路恢复 (2026-08-18)
 ### 已完成
 - ✅ mem0.json mode: oss → self_hosted (本地改, 重启后 MEM0_HOST 接管)
-- ✅ persist_to_neon.py 写好 (替代 persist_to_r2.py, 砍 R2+Supabase 直连 Neon 主路)
+- ✅ persist_to_neon.py 写好 (替代旧 Supabase 主路, 直连 Neon 主路; persist_to_r2.py 2026-08-18 恢复作 Neon 读源 R2 副路快照, 见下条)
 - ✅ real-start.sh 门控: SUPABASE_URL → POSTGRES_HOST
 - ✅ neon-schema.sql 写好 (七表 DDL, 幂等, 无 backup_snapshots)
 - ✅ 代码改动已推 nexus (commit f035a48)

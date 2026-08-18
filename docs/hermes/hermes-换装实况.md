@@ -13,6 +13,7 @@
 > - `docs/ARCHITECTURE.md` L149-153 "Hermes Agent ≠ HTTP 服务(查证修正)" → **推翻**。
 > - `docs/new/部署/hermes-agent-换装方案.md` 决策 3 "留 Gradio+FastAPI 框壳 + agent_server.py 包入" → **半推翻**(agent_server.py 已删,改全原生三组件,见 §2)。
 > - `docs/new/部署/hermes-v9-hf-deploy-checklist.md` §Secrets `GLM_BASE_URL`/`GLM_API_KEY`/zai provider 路径 → **已旧**(改 omn custom provider + OPENAI_API_KEY,见 §5)。
+> - **本文自身** `persist_to_r2.py` "Supabase→R2 四表灾备"、"Supabase+R2 双写"、§5 env 表 Supabase 四项必填、R2 作 litestream 接力 等述 → **已旧**(2026-08-17 Supabase→Neon 主路 + 2026-08-18 R2 副路恢复读源=Neon,见 §10.3)。
 
 ---
 
@@ -32,7 +33,7 @@
                                                   ├─ nexus_call_claude
                                                   └─ nexus_call_codex
                                                   └─ bridge ─> libs/shared/gateway.call_space
-                                                  └─ Worker / 下游 Space / R2 / Supabase
+                                                  └─ Worker / 下游 Space / R2 / Neon
 ```
 
 ---
@@ -84,7 +85,7 @@
 2. **Dockerfile 永续墓碑** —— `ARG BASE_IMAGE=ghcr.io/i3t2y/nexus-base:stable` + 仅 `COPY start.sh`(逻辑层在镜像外);首切后永不动。
 3. **依赖进 GHCR base 镜像** —— hermes-agent + 蔓延依赖 + ~~litestream~~(已弃见 §10.1)+ 自编 libsqlite3 3.53.4(K-R6:≥3.51.3 防 fresh DB 强 DELETE 致 WAL 静默 off)+ web_dist 预建(K-R4)+ **ui-tui/dist/entry.js 预建**(K-R8:消 dashboard embedded-chat runtime `npm install` 死循环 → "Chat unavailable: 1";ENV `HERMES_TUI_DIR=/opt/hermes-agent/ui-tui`)+ messaging 子集(aiohttp/telegram/discord/brotlicffi)全在 base,逻辑层零 `pip install`。
 
-- ~~state.db 经 litestream WAL→R2 复制(铁律 L8)续命;Supabase 四表经 `persist_to_r2.py` 快照(灾备,与 litestream 互补)。~~ → **已弃(2026-08-05 治本,见 §10.1)**:litestream 旁路进程并发读 WAL = state.db malformed 根因,全段删;state.db 移 `/opt/data` 本地盘 + 会话历史持久靠 §10.2 双脚本周期推 Bucket。Supabase+R2 四表灾备 `persist_to_r2.py` 保留。
+- ~~state.db 经 litestream WAL→R2 复制(铁律 L8)续命;Supabase 四表经 `persist_to_r2.py` 快照(灾备,与 litestream 互补)。~~ → **已弃(2026-08-05 治本,见 §10.1)**:litestream 旁路进程并发读 WAL = state.db malformed 根因,全段删;state.db 移 `/opt/data` 本地盘 + 会话历史持久靠 §10.2 双脚本周期推 Bucket。~~Supabase+R2 四表灾备 `persist_to_r2.py` 保留~~ → **进一步改(2026-08-17/18,见 §10.3)**:Supabase 全退役→Neon 主路 `persist_to_neon.py`;R2 副路 `persist_to_r2.py` 读源改 Neon(HTTP /sql),R2 灾备快照层。
 
 ---
 
@@ -219,9 +220,10 @@ model:
 |--------|-----|------|
 | `OPENAI_API_KEY` | `<omn 真 Bearer key>` | omn custom provider 鉴权;config.yaml `${OPENAI_API_KEY}` 展开。**非** `GLM_API_KEY`/`ANTHROPIC_API_KEY`(旧路径已弃) |
 | `API_SERVER_KEY` | `<≥16 字符随机串>` | api_server adapter 真触发器 + `/v1/*` Bearer 鉴权(双用) |
-| `R2_ENDPOINT` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_REGION` | R2 token | state.db litestream 接力 + R2 文件 CRUD |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_ANON_KEY` | Supabase | 业务表 + persist 灾备 |
-| `SUPABASE_DB_URI` | `postgresql://...?sslmode=require` | langgraph AsyncPostgresSaver(port 6543) |
+| `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Neon 连接串分件 | Neon HTTP /sql 主路 `persist_to_neon.py` 四表 + R2 副路 `persist_to_r2.py` 读源共用(2026-08-17 替 Supabase)。host 带 `-pooler` 后缀脚本自动 strip(/sql 要 non-pooler);`POSTGRES_DB` 默认 `neondb` |
+| `R2_ENDPOINT` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_REGION` / `R2_BUCKET` | R2 token | R2 副路灾备快照层 `persist_to_r2.py` 读 Neon 写 R2(2026-08-18 恢复;**非** litestream 接力已弃)+ R2 文件 CRUD n-exus-r2 plugin |
+| ~~`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_ANON_KEY`~~ | ~~Supabase~~ | **archived 2026-08-17 全退役**,HF Settings 可删(留 old/sql/ 回退) |
+| ~~`SUPABASE_DB_URI`~~ | ~~`postgresql://...`~~ | **archived**,langgraph AsyncPostgresSaver 已删 |
 | `NEXUS_API_KEY` | 同系统一把 | 下游鉴权 `X-Nexus-Key`(非 `Authorization`,后者留 HF 层) |
 | `HF_TOKEN` | 有写 `sonoke/logic` 权限 | bootstrap 拉 Bucket + 私有 Space HF 层 |
 | `SPACE_AUTHOR_NAME` | `sonoke` | hermes agent 知 owner |
@@ -294,7 +296,7 @@ model:
 - **根因实证**(2026-08-05):`/data` 实为 HF Bucket mount(FUSE/Xet) + litestream 旁路进程并发读 state.db WAL → SQLite corruption(官方雷:Tropy/OneDrive 同步夹层 SQLite 不许他进程并发改文件)。hermes 原生畸形自愈 `_try_runtime_fts_rebuild` 跑过但 retry 仍 malformed = 库整体损。
 - **治本方案 A** commit `ff5c3ae` + `2d411aa`:① `HERMES_HOME` 移出 bucket FUSE → `/opt/data/.hermes`(本地盘 ext4/overlay 无 FUSE 无旁路进程,WAL 稳);② base Dockerfile L229 `ENV HERMES_HOME=/opt/data/.hermes` 固化(覆盖 start.sh `${VAR:-default}`);③ base L116 预 `chown /opt/data`;④ **litestream 全段弃**(state.db 在本地盘,无需 WAL 复制续命)。
 - **HF 实证**(2026-08-05 07:23 reboot log):无 mkdir fail + `/opt/data/.hermes` 在 + 无 Bus error + 无 OOM = **真治本**。
-- **代价**:重启丢 dashboard 会话历史(transient state.db ephemeral 因本地盘重启清)。**核心四表 agent_states/task_logs/long_memory/skills_index 在 Supabase+R2 双写(`persist_to_r2.py`)不丢,AI 长期记忆不丢**。state.db 仅管 dashboard 会话历史索引,非 AI 记忆源。
+- **代价**:重启丢 dashboard 会话历史(transient state.db ephemeral 因本地盘重启清)。**核心四表 agent_states/task_logs/long_memory/skills_index 持久化靠 Neon 主路 `persist_to_neon.py`(2026-08-17 替 Supabase)+ R2 副路快照 `persist_to_r2.py` 读 Neon 写 R2(2026-08-18 恢复,见 §10.3)双层不丢,AI 长期记忆不丢**。state.db 仅管 dashboard 会话历史索引,非 AI 记忆源。
 - ⚠️**推翻 §3 铁律 L8**:"state.db 经 litestream WAL→R2 复制续命" → **已弃**(治本后 litestream 删)。
 
 ### 10.2 会话历史持久层补全(A 方案,2026-08-06)—— 治"重启丢会话历史"代价
@@ -358,3 +360,30 @@ model:
 | 2 | HF Secrets 补 HF_OWNER + NEXUS_LOGIC_BUCKET | 部署侧 | 用户 HF Dashboard |
 | 3 | CF Worker §10.3 ①~④ | 待 CF Dashboard | 用户 CF Dashboard |
 | 4 | K-R8 base 镜像重 build 推 GHCR + HF rebuild 拉 | 涉 GHCR PAT | 用户本地 docker build/push |
+| 5 | HF Secrets 加 Neon 五件 POSTGRES_* + R2 五件 R2_*(见 §10.7) | 部署侧 | 用户 HF Dashboard |
+| 6 | HF Secrets 删旧 SUPABASE_* + MEM0_PG_URI(2026-08-17 退役) | 部署侧 | 用户 HF Dashboard |
+| 7 | Neon Console 执行 `memgraph/docs/neon-schema.sql`(建七表) | 部署侧 | 用户 Neon Dashboard |
+
+### 10.7 持久化真态推翻(Neon 替 Supabase 主路 + R2 副路恢复,2026-08-17/18)
+
+**本文 §5 env 表旧 Supabase 四项必填 + R2 作 litestream 接力 + 各处 "Supabase+R2 双写" / "Supabase→R2 四表灾备" 述文已全部推翻。真态权威件取 `docs/shared/ARCHITECTURE.md` 顶部(2026-08-18)+ `docs/shared/CREDENTIALS.md`。**
+
+**演进链**(两次叠加):
+1. **2026-08-17 Supabase→Neon 全量迁移**:Supabase(7 天暂停 + RLS)退役 → Neon Free tier(pgvector + scale-to-zero)。`persist_to_r2.py` 当时一并砍(real-start.sh 不 nohup,文件留死 code)→ 仅 `persist_to_neon.py` 主路四表直连 Neon(HTTP /sql 端点,每次 POST 完即断 → Neon 自然 scale-to-zero,CU-h ~0.5-3/月 vs 保活 180/月超额)。
+2. **2026-08-18 R2 副路恢复**:R2 作灾备快照层**复活**,读源从 Supabase 改 Neon(HTTP /sql),与 Neon 主路**双层并存双写**。commit `66db3d3`(代码侧全落,本地未 push 待拍)。
+
+**现役持久化双层**:
+- **主路** `persist_to_neon.py`(real-start.sh nohup,默认 600s):hermes 内部写 Neon 四表(agent_states/task_logs/long_memory/skills_index)。
+- **副路** `persist_to_r2.py`(real-start.sh nohup,默认 **1800s**,读源=Neon HTTP /sql):Neon 四表 → R2 JSON 快照 + `supabase-snapshot/_manifest.json`(manifest-only:sha256/bytes/rows 全放 R2,**不进 Neon backup_snapshots 表**,schema 不倒退)。`restore_from_r2.py` 反向闭环(R2 → Neon HTTP /sql `INSERT ... ON CONFLICT`,jsonb 列 `$N::jsonb` 强转)。
+
+**关键:同 `SYNC_INTERVAL_SEC` env 污染 bug(2026-08-18 首版 → 同日修复)**:
+- 首版陷阱:real-start.sh Neon 段先 `export SYNC_INTERVAL_SEC=600` → R2 段 `${SYNC_INTERVAL_SEC:-1800}` 见已设取 600 → HF boot log 11:00 实证 R2 副 `interval=600s` 非 1800s(首版误判"各自 fork 定格互不污染" = 错)。
+- 修复 = env 名分离:`persist_to_r2.py` L40 改 `_INTERVAL = int(os.getenv("R2_SYNC_INTERVAL_SEC") or os.getenv("SYNC_INTERVAL_SEC", "1800"))`;`real-start.sh` L145 改 `export R2_SYNC_INTERVAL_SEC="${R2_SYNC_INTERVAL_SEC:-1800}"`(不碰 Neon 段)。hf buckets cp 推 2 件回拉核字节 MATCH。两件未 git commit 待拍。
+
+**待用户**(见上待办表 #5/#6/#7):
+- HF Secrets 加 `POSTGRES_HOST/PORT/USER/PASSWORD/DB`(主路+R2 副路共用)+ `R2_ENDPOINT/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET/R2_REGION`(副路灾备)。
+- HTTP Secrets 删旧 `SUPABASE_URL/SERVICE_ROLE_KEY/ANON_KEY/DB_URI` + `MEM0_PG_URI`。
+- Neon Console 执行 `memgraph/docs/neon-schema.sql`(建七表,幂等)。
+- HF Restart → boot log 验双行 `persist-neon daemon up (→ Neon, interval=600s)` + `persist-r2 snapshot daemon up (→ R2, source=Neon, interval=1800s)`;`persist-r2.log` 首周期 synced 四表。
+
+**回退保底**(改回 Supabase 读源):`old/spaces/hermes/scripts/persist_to_r2.py` + `restore_from_r2.py`(commit `d96c408` 原版 Supabase 读源)+ `old/sql/00_schema.sql`(含 backup_snapshots DDL + RLS)。

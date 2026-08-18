@@ -17,7 +17,8 @@ R2 作副路快照,boto3 原子上传 + manifest.json 索引 + sha256 完整性�
   R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
   R2_BUCKET        (默认 nexus-checkpoints; 统一桶名)
   POSTGRES_HOST / POSTGRES_PORT / POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
-  SYNC_INTERVAL_SEC (默认 1800 = 30分钟,快照层低频 R2 Class A 写 9600/天 << 免费额)
+  R2_SYNC_INTERVAL_SEC (默认 1800 = 30分钟,快照层低频 R2 Class A 写 9600/天 << 免费额)
+  (兼容回退: 未设 R2_SYNC_INTERVAL_SEC 时读 SYNC_INTERVAL_SEC,默认 1800)
 """
 from __future__ import annotations
 
@@ -35,7 +36,8 @@ import boto3  # noqa: E402
 import httpx  # noqa: E402
 from botocore.config import Config  # noqa: E402
 
-_INTERVAL = int(os.getenv("SYNC_INTERVAL_SEC", "1800"))
+# R2 副路独立 env 名,与 Neon 主路 SYNC_INTERVAL_SEC 分离(避免 real-start.sh 同名污染)
+_INTERVAL = int(os.getenv("R2_SYNC_INTERVAL_SEC") or os.getenv("SYNC_INTERVAL_SEC", "1800"))
 _BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
 # manifest 索引对象 key(R2 内单文件,列各表最新快照 sha256/size,便于 restore 找最新)

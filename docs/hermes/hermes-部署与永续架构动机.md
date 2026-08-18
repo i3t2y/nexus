@@ -1,5 +1,7 @@
 # Hermes 部署与永续架构动机(全维度案卷 / 给 AI 看这份)
 
+> ⚠️ **本文提炼日 2026-08-06,R2+Neon 双写(2026-08-17/18)前**:持久化主路已从 Supabase 全迁移 Neon(2026-08-17),R2 副路快照 2026-08-18 恢复读源=Neon(原文 Supabase→R2 / Supabase+R2 双写 述已在职改行更述,见 §3 部署链骨架 inline 改;完整真态取 [`hermes-换装实况.md`](./hermes-换装实况.md) §10.7 + [`docs/shared/ARCHITECTURE.md`](../shared/ARCHITECTURE.md))。永续动机来龙去脉 + 架构四层 + K-R 闸门段(本文主旨)仍准,仅持久化层细节需对齐换装件 §10.7。
+
 > **提炼日**: 2026-08-06 | **性质**: hermes Space **全维度自包含案卷** —— WHY 永续架构动机 + 架构四层 + 现役部署实况 + K-R 闸门 + 待办,一份握全 hermes 部署来龙去脉。
 > **血统**: plan `shiny-moseying-quasar.md` §Context(永续动机源)+ 换装实况件(源码核证深证)+ git/Bucket 实时核。
 >
@@ -129,7 +131,8 @@ HF Space sonoke/h 启动
    ├─ config.yaml 从 template 永覆盖(cmp template≠runtime 则 cp)→ 防 dashboard 写坏锁死 provider
    ├─ replay_packages.py(装包日志回放)
    ├─ restore_state.py(★boot 期 hermes 起写锁前拉回 state.db 治重启丢会话历史)
-   ├─ nohup persist_to_r2.py(Supabase→R2 四表灾备)
+   ├─ nohup persist_to_neon.py(Neon 主路四表 600s,2026-08-17 替 Supabase)
+   ├─ nohup persist_to_r2.py(R2 副路快照 1800s,读源=Neon HTTP /sql,2026-08-18 恢复)
    ├─ nohup state_db_uploader.py(★周期 300s 推 state.db 到 Bucket state-backups 防重启丢)
    ├─ nohup keepalive.py(下游 Space + omniroute 保活防 48h 休眠)
    └─ while true:python -c "from app.main import boot; boot()"  # 自愈循环
@@ -217,7 +220,7 @@ HF Space sonoke/h 启动
 - **根因实证**(2026-08-05):`/data` 实为 HF Bucket mount(FUSE/Xet)+ litestream 旁路进程并发读 state.db WAL → SQLite corruption(官方雷:Tropy/OneDrive 同步夹层 SQLite 不许他进程并发改文件)。hermes 原生畸形自愈 `_try_runtime_fts_rebuild` 跑过但 retry 仍 malformed = 库整体损。
 - **治本方案 A** commit `ff5c3ae` + `2d411aa`:① `HERMES_HOME` 移出 bucket FUSE → `/opt/data/.hermes`(本地盘 ext4/overlay 无 FUSE 无旁路进程,WAL 稳);② base Dockerfile L229 `ENV HERMES_HOME=/opt/data/.hermes` 固化(覆盖 start.sh `${VAR:-default}`);③ base L116 预 `chown /opt/data`;④ **litestream 全段弃**(state.db 在本地盘,无需 WAL 复制续命)。
 - **HF 实证**(2026-08-05 07:23 reboot log):无 mkdir fail + `/opt/data/.hermes` 在 + 无 Bus error + 无 OOM = **真治本**。
-- **代价**:重启丢 dashboard 会话历史(state.db ephemeral 因本地盘重启清)。**核心四表 agent_states/task_logs/long_memory/skills_index 在 Supabase+R2 双写(`persist_to_r2.py`)不丢,AI 长期记忆不丢**。state.db 仅管 dashboard 会话历史索引,非 AI 记忆源。
+- **代价**:重启丢 dashboard 会话历史(state.db ephemeral 因本地盘重启清)。**核心四表 agent_states/task_logs/long_memory/skills_index 持久化靠 Neon 主路 `persist_to_neon.py`(2026-08-17 替 Supabase)+ R2 副路快照 `persist_to_r2.py` 读 Neon 写 R2(2026-08-18 恢复)双层不丢,AI 长期记忆不丢**。state.db 仅管 dashboard 会话历史索引,非 AI 记忆源。
 
 ### 5.2 会话历史持久层补全(A 方案,2026-08-06)—— 治"重启丢会话历史"代价
 

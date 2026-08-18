@@ -1,5 +1,11 @@
 # Hermes Space V9 HF 部署清单(本地验 V5-V8 全过后)
 
+> ⚠️ **本清单整体为 V9 部署期中间态,大部分 Secrets/部署步骤已过时**:
+> - 模型 Secrets 已从 GLM/zai 改 omn custom provider + `OPENAI_API_KEY`(见 `hermes-换装实况.md` §5)
+> - R2 用途已从 litestream state.db WAL 接力(已弃 2026-08-05)改 Neon 副路灾备快照(2026-08-18 恢复,见换装件 §10.7)
+> - 持久化已从 Supabase 主路全迁移 Neon(2026-08-17,Supabase archived,见换装件 §10.7 与 `docs/shared/ARCHITECTURE.md`)
+> **现役 Secrets 真态权威取 `hermes-换装实况.md` §5 env 表 + §10.7 + `docs/shared/CREDENTIALS.md`**。本清单仅留作 V9 部署历史回溯,部署**勿取本清单**。
+
 > 本地 K 形态代码侧 + base 镜像闸门 + V5-V8 验全过(见 commit `8432594`)。
 > 此清单 = HF Space 真部署执行步骤(需真凭据,凭据不入 git,经 HF Space Secrets UI 注)。
 > 凭据侧:V9 期用户填真实值(HF Space `sonoke/h` + bucket `sonoke/logic`,替旧虚拟 `i3t2y/hermes` 占位)。
