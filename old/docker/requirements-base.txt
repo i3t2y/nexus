@@ -59,7 +59,7 @@ packaging>=23.2,<25
 Markdown==3.10.2
 PyJWT[crypto]==2.13.0  # PYSEC-2026-175/177/178/179
 urllib3>=2.7.0,<3
-cryptography==48.0.1   # CVE-2026-39892/34073;被 PyJWT[crypto] 拉,显式钉防漂
+cryptography==50.0.0   # CVE-2026-69247 Bleichenbacher + 39892/34073/537c;被 PyJWT[crypto] 拉,显式钉防漂(2026-08-19 批2 对齐 hermes-agent v8.18 pyproject)
 psutil==7.2.2
 # websockets:hermes core 要 ==15.0.1,但 gradio-client 1.5.1 钳 <15,>=10 相斥。
 # hermes 核心不 import websockets(仅 feishu 插件 adapter.py 用,feishu 已在 disabled/extras 外不装/不启)。
@@ -80,11 +80,12 @@ ptyprocess>=0.7.0,<1   # linux marker(posix)
 # 只手钉 nexus 真用子集 = aiohttp + telegram-bot 裸(去 [webhooks] 因用 polling)+
 # discord.py 裸(去 [voice] 因 HF 无麦克风文字 IM)+ brotlicffi(telegram 文件 brotli 解压)。
 # HF 期 IM 通路靠 telegram polling + discord REST/WS;voice/slack/matrix 不用。
-aiohttp==3.14.1            # api_server adapter HTTP server;CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
-python-telegram-bot==22.6  # polling 路径用;不带 [webhooks] extra(HF 用 polling 不用 webhook)
+aiohttp==3.14.3            # api_server adapter HTTP server;CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265 + smuggling GHSA-cq5v/mfx4/mq44(2026-08-19 批2 对齐 v8.18)
+python-telegram-bot==22.8  # polling 路径用;不带 [webhooks] extra(HF 用 polling 不用 webhook)(2026-08-19 批2 对齐 v8.18)
 discord.py==2.7.1          # 不带 [voice] extra(HF 无麦克风,文字 IM 不需 PyNaCl/opuslib/ffmpeg)
 brotlicffi==1.2.0.1        # telegram sendPhoto/voice brotli 压缩解;文字 IM 可缺但文件传输需
 
 # nemo-relay:NVIDIA Rust agent runtime binding(linux x86_64/aarch64),非 omniroute 路由。
 # hermes core dep;base 装 --no-deps 须手钉。platform marker 保 linux x86_64(HF amd64)
-nemo-relay>=0.6.0,<0.7; sys_platform == 'linux' and platform_machine == 'x86_64'
+# v8.18:0.6→0.7.1 加 android guard(platform_release 排除 android Termux);linux x86_64 非 android 仍满足
+nemo-relay>=0.7.1,<0.8; sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release

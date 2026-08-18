@@ -97,14 +97,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl jq sqlite3 git ripgrep build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# ── litestream v0.5.15(root 段,监 state.db WAL→R2 不改源)─────────────
+# ── litestream 段已摘(2026-08-19 重构债批2)────────────────────────────
 # ★2026-08-05 A 方案后 litestream 全段弃(state.db 移 /opt/data 本地盘,无旁路进程干扰 WAL;
-#   start.sh 已删 restore/replicate 全段 + 删 scripts/litestream.yml 孤儿)。此 RUN 留作
-#   base 历史,下次 rebuild base 顺手删(当前不要求 rebuild;litestream 二进制在镜像内未引不跑,无害)。
-# 资产名:litestream-0.5.15-linux-x86_64.tar.gz(无 v 前缀 + x86_64;勿用 vfs-amd64 那是 .so 扩展)
-# 解出 litestream CLI 二进制放 /usr/local/bin
-RUN curl -fsSL https://github.com/benbjohnson/litestream/releases/download/v0.5.15/litestream-0.5.15-linux-x86_64.tar.gz \
-    | tar -xz -C /usr/local/bin litestream
+#   start.sh 已删 restore/replicate 全段 + 删 scripts/litestream.yml 孤儿)。
+# 2026-08-19 批2 重 build:摘本项目 litestream 二进制下载 RUN(原 v0.5.15 tar.gz 解 /usr/local/bin)。
+# 旧 RUN 已删,二进制不再 baked 进 base(镜像小 ~8MB + 消孤儿 ghost binary)。
+# 旧资产名备查:litestream-0.5.15-linux-x86_64.tar.gz(无 v 前缀 + x86_64)
 
 # ── uv(root 段,装系统 uv 供 hermes-agent editable install)────────────
 # astral.sh install.sh 默认装 /root/.local/bin,显式挪 /usr/local/bin 供所有 user 用
@@ -130,7 +128,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements-base.txt
 # pin tag 不 pin main(防 break;升级改 tag + rebuild)
 # clone 到 /opt/hermes-agent(系统级只读供 import,root 拥有,user 只读 import 即可)
 # editable --system 安装:egg-link 写进系统 site-packages 指向源码,任何 user 能 import run_agent
-ARG HERMES_AGENT_TAG=v2026.8.3
+ARG HERMES_AGENT_TAG=v2026.8.18
 RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
         https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
     && uv pip install --system --no-cache-dir -e /opt/hermes-agent --no-deps
@@ -153,7 +151,7 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
 #   - 缺 env → list_providers() 空 → gate `SystemExit("Refusing to bind...")` fail-closed 拒起
 #   - 配齐 → gate 通过 → /login 密码表单(scrypt 哈希 + HMAC stateless cookie,无 OAuth/IDP/DB)
 #
-# 仅改一处 CORS(web_server.py v0.20.0 v2026.8.3 核:patch_web_server.py 文本锚 allow_origin_regex=... v0.20.0 仍在 L373-375,zero drift):
+# 仅改一处 CORS(web_server.py v0.20.4 v2026.8.18 核:patch_web_server.py 文本锚 allow_origin_regex=... v2026.8.18 在 L543,zero drift;行漂 文本锚无碍):
 #   allow_origin_regex(限 localhost)→ allow_origins=["*"]。
 #   解 HF iframe embed — sonoke-h.hf.space 在 huggingface.co iframe 内渲染,SPA fetch JS/CSS/WS
 #   跨域回 sonoke-h.hf.space/api/*,默认 CORS regex 拒 → 换 allow_origins=["*"] 放行所有域
@@ -162,12 +160,19 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
 #   鉴权走 BasicAuthProvider cookie(HMAC-sig),非 CORS credential — allow_origins=["*"] 与 cookie
 #   鉴权无冲突(CORS preflight 不挡 SameSite cookie 流)。
 #
-# 注:HERMES_AGENT_TAG 升 v2026.8.3(v0.20.0,3c27eb6,2026-08-03 release)自 v2026.7.30(v0.19.1,470cf66)。
-#   v0.19.1→v0.20.0 全核兼容:requires-python ">=3.11,<3.14" 同(3.11 可跑);root engines node >=22.22.0 npm
-#   <11.10.0||>=11.17.0 同(我 node 22.23.2 满足);pyproject deps diff 空;无 PEP 695/3.12+ 语法;
-#   patch 文本锚 allow_origin_regex v0.20.0 L373-375 在(zero drift);plugins_cmd _install_plugin_core L450 在;
-#   Discord _enable_from_env L1868-1871 在;skills SKILLS_DIR/MANIFEST_FILE/HubLockFile 同;gateway run/
-#   dashboard/--accept-hooks/--replace/HERMES_TUI_DIR/HERMES_WEB_DIST flag+env 全在。升级改 tag 一行 + rebuild。
+# 注:HERMES_AGENT_TAG 升 v2026.8.18(v0.20.4)自 v2026.8.3(v0.20.0,3c27eb6,2026-08-03)。
+#   v0.20.0→v0.20.4 全核兼容:requires-python ">=3.11,<3.14" 同(3.11 可跑);root engines 同;
+#   pyproject deps diff:主版本号 0.20.0→0.20.4;安全 pin 升(cryptography 48→50 CVE-2026-69247 Bleichenbacher /
+#   aiohttp 3.14.1→3.14.3 smuggling GHSA / telegram 22.6→22.8 / mautrix 0.21.0→0.21.1);nemo-relay 0.6→0.7.1
+#   加 android guard(我 linux x86_64 非 android 满足);cli extra 删(simple-term-menu)但 dashboard 命令不绑
+#   cli extra(main.py:10005 + container_boot.py:371)无影响;无 PEP 695/3.12+ 语法。
+#   patch 文本锚 allow_origin_regex v0.20.4 web_server.py:543 在(行漂 文本锚无碍,patch_web_server.py
+#   `old_cors in s` assert 非行号);plugins_cmd _install_plugin_core / gateway run/--accept-hooks/--replace /
+#   HERMES_TUI_DIR(main.py:2351)/HERMES_WEB_DIST(web_server.py:137) flag+env 全在(grep 双证)。
+#   state.db corrupt 修复:#88234 session_search(cli_commands_mixin.py:958)+ backup.py PRAGMA integrity_check
+#   结构探针纳入。mcp extra 升 1.28.1→2.0.0(MCP 协议 revision 2026-07-28)+ httpx2==2.7.0(独立 module
+#   name 与 httpx side-by-side 无冲突)→ 见下方独立 pip 装段。
+#   升级改 tag 一行 + 4 pin 对齐 + mcp pip 段 + rebuild。
 #
 # 施工:独立脚本 docker/patch_web_server.py(只 1 锚点;避 shell 行续转义 + Python 单行分号地雷;
 #   脚本多行 + 函数,py_compile 可验;锚漂即 build 期 AssertionError 拦建,跨升级稳健)。
@@ -177,6 +182,18 @@ RUN cd /opt/hermes-agent && python3 /tmp/patch_web_server.py && rm -f /tmp/patch
 # ── 预装 anthropic SDK:消 hermes-agent 运行时 lazy_deps 懒装风控(决定1.6)──
 # 用 [anthropic] extras pin 0.87.0(对齐 pyproject extras,CVE 修正);不裸装最新防漂
 RUN pip install --no-cache-dir "anthropic==0.87.0"
+
+# ── 预装 mcp SDK(2026-08-19 重构债批2,治 base 缺 mcp pip 包)──────────
+# hermes-agent pyproject `mcp` 是 optional-dependencies extra(非主 dependencies),base Dockerfile
+# `uv pip install --system -e /opt/hermes-agent --no-deps` 的 --no-deps 跳所有传递依赖含 optional extras
+# → mcp 包永不进 base。hermes 原生 MCP server 能力(`hermes mcp add/list`,dashboard/plugin MCP路,
+# Stage B CNB MCP 路若采)HF 容器 runtime `import mcp` fail。
+#
+# v2026.8.18 pyproject mcp extra = ["mcp==2.0.0","httpx2==2.7.0","starlette==1.3.1"](升自 1.28.1,
+# MCP 协议 revision 2026-07-28)。mcp 2.0 把自身 HTTP 栈从 httpx 换 httpx2(独立 module name,
+# 与 hermes 自己的 httpx[socks]==0.28.1 side-by-side 无冲突)。显式 pin 三件独立 pip 装,不靠
+# extra 解析(--no-deps 安全),最稳:
+RUN pip install --no-cache-dir "mcp==2.0.0" "httpx2==2.7.0" "starlette==1.3.1"
 
 # ── K-R4 闸门:base bake 期 prebuild hermes_cli/web_dist/ (dashboard SPA)──
 # 用 builder stage 抽来的 node/npm/corepack 跑 `npm install --workspace web && npm run build -w web`。

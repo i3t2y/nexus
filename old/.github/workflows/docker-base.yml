@@ -13,7 +13,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "docker/**"
+      - "old/docker/**"
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/nexus-base
@@ -40,8 +40,9 @@ jobs:
       - name: Build & push :stable(浮动标签)
         uses: docker/build-push-action@v6
         with:
-          context: docker
-          file: docker/nexus-base.Dockerfile
+          # 2026-08-19 重构债批2:build 链 context/file 改指 old/docker/(34f057d 整理搬后真位)
+          context: old/docker
+          file: old/docker/nexus-base.Dockerfile
           push: true
           tags: |
             ${{ env.IMAGE }}:stable
