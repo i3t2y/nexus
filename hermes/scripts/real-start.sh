@@ -131,6 +131,7 @@ if [ -n "${POSTGRES_HOST:-}" ]; then
   export SYNC_INTERVAL_SEC="${SYNC_INTERVAL_SEC:-600}"
   echo "[real-start] persist-neon daemon up (→ Neon ${POSTGRES_HOST}/${POSTGRES_DB:-neondb}, interval=${SYNC_INTERVAL_SEC}s, HTTP /sql mode)"
   nohup python "$APP_DIR/scripts/persist_to_neon.py" >"${LOG_DIR:-/opt/data/logs}/persist-neon.log" 2>&1 &
+  PERSIST_NEON_PID=$!
 else
   echo "[real-start] persist-neon daemon skip (need POSTGRES_HOST)"
 fi
@@ -145,6 +146,7 @@ if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ] && [ -n "${POSTGR
   export R2_SYNC_INTERVAL_SEC="${R2_SYNC_INTERVAL_SEC:-1800}"
   echo "[real-start] persist-r2 snapshot daemon up (→ R2 ${R2_BUCKET:-nexus-checkpoints}/supabase-snapshot/, source=Neon, interval=${R2_SYNC_INTERVAL_SEC}s)"
   nohup python "$APP_DIR/scripts/persist_to_r2.py" >"${LOG_DIR:-/opt/data/logs}/persist-r2.log" 2>&1 &
+  PERSIST_R2_PID=$!
 else
   echo "[real-start] persist-r2 snapshot daemon skip (need R2_ENDPOINT+R2_ACCESS_KEY_ID+POSTGRES_HOST)"
 fi
@@ -152,6 +154,7 @@ fi
 if [ -n "${HF_TOKEN:-}" ] && [ -n "${HF_OWNER:-}" ] && [ -n "${NEXUS_LOGIC_BUCKET:-}" ]; then
   echo "[real-start] state-db upload daemon up (→ bucket ${HF_OWNER}/${NEXUS_LOGIC_BUCKET}/state-backups)"
   nohup python "$APP_DIR/scripts/state_db_uploader.py" >"${LOG_DIR:-/opt/data/logs}/state-upload.log" 2>&1 &
+  STATE_PID=$!
 else
   echo "[real-start] state-db upload daemon skip (need HF_TOKEN+HF_OWNER+NEXUS_LOGIC_BUCKET)"
 fi
@@ -161,6 +164,7 @@ fi
 if [ -n "${HF_TOKEN:-}" ] && [ -n "${HF_OWNER:-}" ] && [ -n "${NEXUS_LOGIC_BUCKET:-}" ]; then
   echo "[real-start] home-files upload daemon up (→ bucket ${HF_OWNER}/${NEXUS_LOGIC_BUCKET}/home-backups)"
   nohup python "$APP_DIR/scripts/home_files_uploader.py" >"${LOG_DIR:-/opt/data/logs}/home-upload.log" 2>&1 &
+  HOME_PID=$!
 else
   echo "[real-start] home-files upload daemon skip (need HF_TOKEN+HF_OWNER+NEXUS_LOGIC_BUCKET)"
 fi
@@ -171,6 +175,7 @@ KEEPALIVE_ENABLED="${KEEPALIVE_ENABLED:-1}"
 if [ "$KEEPALIVE_ENABLED" = "1" ]; then
   echo "[real-start] keepalive daemon up"
   nohup python "$APP_DIR/scripts/keepalive.py" >"$LOG_DIR/keepalive.log" 2>&1 &
+  KEEPALIVE_PID=$!
 fi
 
 # ★2026-08-09 方案 C:删 dns-resolve.py dead code 段(原 start.sh L214-220 引用
@@ -183,9 +188,44 @@ fi
 # gateway daemon thread 同 async loop 起 api_server adapter(API_SERVER_KEY ≥16 触发)+ IM。
 # 自愈循环:boot 退出(任一 daemon thread 死)则 5 秒后重启 boot 整进。
 # rebootstrap 兜底:boot 退出后若 main.py 不在调 bootstrap_from_bucket 重拉(thin source 时函数继承)。
+
+# ── 优雅关机钩子(★2026-08-18 Gork 总裁第一步 SIGTERM 短链补全) ──
+# HF 停容器发 SIGTERM。原:主进程前台卡 `python -c boot()`(阻塞)→ SIGTERM 直杀 boot
+#   Python 进程,real-start.sh 主 shell 根本不收 trap(deferred 永远太晚)+ 四 daemon 裸
+#   nohup & 无 signal handler → SIGTERM 直杀无最后 flush → 半截状态丢(state.db/state快照
+#   可能截半 task_logs 长记忆丢末条)。
+# 改:boot 改后台 & 记 BOOT_PID + `wait $BOOT_PID`(wait 可被 trap 中断)→ trap
+#   on_shutdown TERM INT 触发:
+#   1. kill -TERM boot 子进程(hermes 内部 gateway/dashboard daemon thread 收子进程 TERM → shutdown)
+#   2. kill -TERM 四 persist daemon + keepalive(各脚本已装 signal handler → 跑最后 sync_once flush + exit 0)
+#   3. sleep 10 约等 flush 完成(各 _INTERVAL 最短 300s 但信号立即中断 sleep_check 1s 粒度 → 实际 flush 启动秒级)
+#   4. exit 0(HF 容器期望干净退出,restart 复活)
+BOOT_PID=""
+# 五 daemon PID 源自上方 if 段已记(变量未设则空串,kill 跳)
+on_shutdown() {
+  echo "[real-start] SIGTERM/INT recv, graceful shutdown..."
+  # boot 子进程先 TERM(让 hermes 内部 shutdown daemon thread)
+  if [ -n "${BOOT_PID:-}" ]; then
+    kill -TERM "$BOOT_PID" 2>/dev/null
+    echo "[real-start] sent TERM to boot pid=$BOOT_PID"
+  fi
+  # 四 persist daemon + keepalive:各脚本 _on_sigterm handler 触发最后一次 sync_once 后 exit
+  for pid in "${PERSIST_NEON_PID:-}" "${PERSIST_R2_PID:-}" "${STATE_PID:-}" "${HOME_PID:-}" "${KEEPALIVE_PID:-}"; do
+    [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null && echo "[real-start] sent TERM to daemon pid=$pid"
+  done
+  # 等 flush(persist 各 _sleep_check 1s 粒度响应快;10s 兜底防慢网)
+  sleep 10
+  echo "[real-start] shutdown complete, exit 0"
+  exit 0
+}
+
 while true; do
   echo "[real-start] launching hermes boot (gateway + dashboard :7860) app-dir=$APP_DIR"
-  python -c "import sys; sys.path.insert(0,'$APP_DIR'); from app.main import boot; boot()"
+  python -c "import sys; sys.path.insert(0,'$APP_DIR'); from app.main import boot; boot()" &
+  BOOT_PID=$!
+  # trap 须在 wait 前 wait 锚点设:return 后复设 trap 后,while 循环重入再设(保每轮可用)
+  trap on_shutdown TERM INT
+  wait "$BOOT_PID" || true
   code=$?
   echo "[real-start] boot exited code=$code, recheck mount + restart in 5s..."
   [ -f "$APP_DIR/app/main.py" ] || { echo "[real-start] main.py still missing, rebootstrap..."; bootstrap_from_bucket || true; }

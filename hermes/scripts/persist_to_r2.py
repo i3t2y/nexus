@@ -38,6 +38,35 @@ from botocore.config import Config  # noqa: E402
 
 # R2 副路独立 env 名,与 Neon 主路 SYNC_INTERVAL_SEC 分离(避免 real-start.sh 同名污染)
 _INTERVAL = int(os.getenv("R2_SYNC_INTERVAL_SEC") or os.getenv("SYNC_INTERVAL_SEC", "1800"))
+
+# ── 优雅关机钩子(2026-08-18 Gork 总裁第一步 SIGTERM 短链补全) ──
+# real-start.sh 停容器发 SIGTERM → 本 handler 设 _SHUTDOWN flag → while 循环
+# 当前周期结束跑最后一次 sync_once flush 后 sys.exit(0)(无半截快照丢)。
+# --once:单跑一轮 sync_once 后 exit(on_shutdown 可直调 python X.py --once)。
+import signal
+
+_SHUTDOWN = False
+_ONCE = "--once" in sys.argv
+
+
+def _on_sigterm(signum, frame):  # noqa: ANN001
+    global _SHUTDOWN
+    _SHUTDOWN = True
+    print(f"[persist-r2] recv signal {signum}, graceful shutdown after current cycle...", flush=True)
+
+
+signal.signal(signal.SIGTERM, _on_sigterm)
+signal.signal(signal.SIGINT, _on_sigterm)
+
+
+def _sleep_check(seconds):
+    """1s 粒度睡,检 _SHUTDOWN flag 快响应(避免 INTERVAL 内装死)。"""
+    for _ in range(seconds):
+        if _SHUTDOWN:
+            return
+        time.sleep(1)
+
+
 _BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
 # manifest 索引对象 key(R2 内单文件,列各表最新快照 sha256/size,便于 restore 找最新)
@@ -210,10 +239,12 @@ def main() -> None:
         print(f"[persist-r2] Neon HTTP /sql connection OK: {rows}", flush=True)
     except Exception as e:
         print(f"[persist-r2] Neon HTTP /sql connection FAILED: {e}", flush=True)
-    while True:
+    _did_once = False
+    while not _SHUTDOWN:
         try:
             res = sync_once()
             print(f"[persist-r2] synced {res}", flush=True)
+            _did_once = True
         except Exception as e:  # noqa: BLE001
             etype = type(e).__name__
             msg = str(e)
@@ -225,7 +256,19 @@ def main() -> None:
             tb = traceback.format_exc().splitlines()
             tb_short = " | ".join(tb[-3:]) if len(tb) >= 3 else " | ".join(tb)
             print(f"[persist-r2] fatal[{src}/{etype}] {msg} | tb={tb_short} | env={_env_diag()}", flush=True)
-        time.sleep(_INTERVAL)
+        if _ONCE and _did_once:
+            print("[persist-r2] --once done, exit 0", flush=True)
+            sys.exit(0)
+        if _SHUTDOWN:
+            break
+        _sleep_check(_INTERVAL)
+    # 关机 final flush(收 SIGTERM 后补跑一轮确保最后快照不丢)
+    try:
+        sync_once()
+        print("[persist-r2] final flush ok on shutdown, exit 0", flush=True)
+    except Exception as e:
+        print(f"[persist-r2] final flush fail: {e}", flush=True)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

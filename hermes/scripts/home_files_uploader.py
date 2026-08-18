@@ -55,6 +55,35 @@ sys.path.insert(0, "/data/libs")  # Bucket 挂载点;本地调试兜底
 
 _HERMES_HOME = os.getenv("HERMES_HOME", "/opt/data/.hermes")
 _INTERVAL = int(os.getenv("HOME_FILES_UPLOAD_INTERVAL", "600"))
+
+# ── 优雅关机钩子(2026-08-18 Gork 总裁第一步 SIGTERM 短链补全) ──
+# real-start.sh 停容器发 SIGTERM → 本 handler 设 _SHUTDOWN flag → while 循环
+# 当前周期结束跑最后一次 sync_once flush 后 sys.exit(0)(无半截快照丢)。
+# --once:单跑一轮 sync_once 后 exit(on_shutdown 可直调 python X.py --once)。
+import signal
+
+_SHUTDOWN = False
+_ONCE = "--once" in sys.argv
+
+
+def _on_sigterm(signum, frame):  # noqa: ANN001
+    global _SHUTDOWN
+    _SHUTDOWN = True
+    print(f"[home-upload] recv signal {signum}, graceful shutdown after current cycle...", flush=True)
+
+
+signal.signal(signal.SIGTERM, _on_sigterm)
+signal.signal(signal.SIGINT, _on_sigterm)
+
+
+def _sleep_check(seconds):
+    """1s 粒度睡,检 _SHUTDOWN flag 快响应(避免 INTERVAL 内装死)。"""
+    for _ in range(seconds):
+        if _SHUTDOWN:
+            return
+        time.sleep(1)
+
+
 _OWNER = os.getenv("HF_OWNER", "")
 _BUCKET_NAME = os.getenv("NEXUS_LOGIC_BUCKET", "")
 _BACKUP_SUBDIR = "home-backups"
@@ -468,12 +497,26 @@ def main() -> None:
             "(dashboard 设置/.env/memories 重启后丢,需在 HF Secrets 补齐)",
             flush=True,
         )
-    while True:
+    _did_once = False
+    while not _SHUTDOWN:
         try:
             sync_once()
+            _did_once = True
         except Exception as e:  # noqa: BLE001
             print(f"[home-upload] fatal {e}", flush=True)
-        time.sleep(_INTERVAL)
+        if _ONCE and _did_once:
+            print("[home-upload] --once done, exit 0", flush=True)
+            sys.exit(0)
+        if _SHUTDOWN:
+            break
+        _sleep_check(_INTERVAL)
+    # 关机 final flush(收 SIGTERM 后补跑一轮确保最后快照不丢)
+    try:
+        sync_once()
+        print("[home-upload] final flush ok on shutdown, exit 0", flush=True)
+    except Exception as e:
+        print(f"[home-upload] final flush fail: {e}", flush=True)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

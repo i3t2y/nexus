@@ -38,6 +38,34 @@ import httpx  # noqa: E402
 
 _INTERVAL = int(os.getenv("SYNC_INTERVAL_SEC", "600"))
 
+# ── 优雅关机钩子(2026-08-18 Gork 总裁第一步 SIGTERM 短链补全) ──
+# real-start.sh 停容器发 SIGTERM → 本 handler 设 _SHUTDOWN flag → while 循环
+# 当前周期结束跑最后一次 sync_once flush 后 sys.exit(0)(无半截状态丢)。
+# --once:单跑一轮 sync_once 后 exit(on_shutdown 可直调 python X.py --once)。
+import signal
+
+_SHUTDOWN = False
+_ONCE = "--once" in sys.argv
+
+
+def _on_sigterm(signum, frame):  # noqa: ANN001
+    global _SHUTDOWN
+    _SHUTDOWN = True
+    print(f"[persist-neon] recv signal {signum}, graceful shutdown after current cycle...", flush=True)
+
+
+signal.signal(signal.SIGTERM, _on_sigterm)
+signal.signal(signal.SIGINT, _on_sigterm)
+
+
+def _sleep_check(seconds):
+    """1s 粒度睡,检 _SHUTDOWN flag 快响应(避免 INTERVAL 内装死)。"""
+    for _ in range(seconds):
+        if _SHUTDOWN:
+            return
+        time.sleep(1)
+
+
 # 四表读写逻辑:
 # - agent_states, long_memory, skills_index: UPSERT (主键冲突覆盖)
 # - task_logs: 只追加 (bigserial id, 不覆盖)
@@ -200,17 +228,31 @@ def main() -> None:
     except Exception as e:
         print(f"[persist-neon] Neon HTTP /sql connection FAILED: {e}", flush=True)
 
-    while True:
+    _did_once = False
+    while not _SHUTDOWN:
         try:
             res = sync_once()
             print(f"[persist-neon] synced {res}", flush=True)
+            _did_once = True
         except Exception as e:
             etype = type(e).__name__
             msg = str(e)
             tb = traceback.format_exc().splitlines()
             tb_short = " | ".join(tb[-3:]) if len(tb) >= 3 else " | ".join(tb)
             print(f"[persist-neon] fatal[{etype}] {msg} | tb={tb_short} | env={_env_diag()}", flush=True)
-        time.sleep(_INTERVAL)
+        if _ONCE and _did_once:
+            print("[persist-neon] --once done, exit 0", flush=True)
+            sys.exit(0)
+        if _SHUTDOWN:
+            break
+        _sleep_check(_INTERVAL)
+    # 关机 final flush(收 SIGTERM 后补跑一轮确保最后状态不丢)
+    try:
+        sync_once()
+        print("[persist-neon] final flush ok on shutdown, exit 0", flush=True)
+    except Exception as e:
+        print(f"[persist-neon] final flush fail: {e}", flush=True)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
