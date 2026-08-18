@@ -2,6 +2,18 @@
 """
 Nexus Worker MCP Server — stdio MCP server
 
+⚠ DEPRECATED (2026-08-18, Gork 首席架构裁决 + 仓内核证):
+  换装后 Hermes Agent 走原生 plugin `scripts/plugins/nexus-r2/` 三 tool
+  (nexus_call_claude / nexus_call_codex / nexus_route_langgraph) 经
+  `libs/shared/gateway.call_space` 直调下游 Space, 替掉本 stdio 中转路。
+  本文件仓内零引用 (grep 全仓 .py/.sh/.yaml/Dockerfile 无 import/config/路径),
+  不再 `hermes mcp add nexus-worker`。子进程隔离在 HF 收益小 (worker 本就另一
+  Space, 真隔离靠 Space 边界 + task_queue 队列, 不靠本机 stdio 桥)。
+  文件留作旧架构 (Hermes→LangGraph Worker MCP 桥) 历史回溯, 待清理进 old/。
+  现役真态见 docs/hermes/hermes-换装实况.md §2 三组件 + §10 plugin。
+
+---------------------------- 以下为旧文档 (历史保留) ----------------------------
+
 暴露一个工具: run_worker(task, user_id)
 hermes 通过 MCP 调用此工具, 将多步任务 POST 到 LangGraph worker /worker/run
 

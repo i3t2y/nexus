@@ -18,6 +18,9 @@
 │    skills_index (hermes 结构化四表)                  │
 │  └→ task_queue (memlg 专属; 扁平表 + kind/input,    │
 │     Stage A 2026-08-18 详见 memgraph/STATUS.md)     │
+│     kind: {generic|graph|npc|claude_code|pi}        │
+│     (workbuddy_npc 路废 Gork 2026-08-18)           │
+│     消费: FOR UPDATE SKIP LOCKED poll (Upstash 砍)  │
 │  └→ space_health (辅助)                             │
 ├─────────────────────────────────────────────────────┤
 │  Cloudflare R2  灾备快照层 (副路)                    │

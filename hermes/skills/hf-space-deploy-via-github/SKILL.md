@@ -285,7 +285,7 @@ The `templates/langgraph_worker_skeleton.py` file contains a battle-tested worke
 
 8. **Worker deployment flow**: Upload `graph/__init__.py` to HF Dataset via `api.upload_file(repo_type="dataset")` + `api.restart_space()`. Wait ~50s for Space boot. Test with `GET /worker/health` first (checks all component statuses), then `POST /worker/run`. Wait 15-20s after Space restart before LLM-bearing tests (let Zhipu rate-limit window clear — Space boot triggers mem0 server's own LLM calls). Verify all routes registered: `GET /openapi.json` → check `paths` for `/worker/tasks`, `/worker/tasks/{task_id}`, `/worker/run`, `/worker/health`.
 
-9. **Exposing worker to Hermes via MCP**: To let Hermes autonomously call the worker for multi-step tasks, write a stdio MCP server (`/opt/data/.hermes/mcp/nexus_worker_mcp.py`) that wraps the worker's HTTP API as MCP tools (`run_worker`, `worker_health`). Register with `hermes mcp add`. Requires `pip install mcp`. See `references/mcp-server-for-hermes.md` for the full pattern, including the `hermes mcp add` blocklist workaround and interactive prompt handling.
+9. **Worker→Hermes via MCP** ⚠ **DEPRECATED (2026-08-18)**: nexus-worker MCP stdio 桥已废。换装后 Hermes Agent 走原生 plugin `scripts/plugins/nexus-r2/` 三 tool (`nexus_call_claude`/`nexus_call_codex`/`nexus_route_langgraph`) 经 `libs/shared/gateway.call_space` 直调下游 Space, 替掉本 stdio 中转。本 `nexus_worker_mcp.py` 仓内零引用, 不再 `hermes mcp add nexus-worker`。旧 MCP 桥模式见 `references/mcp-server-for-hermes.md` (已标 DEPRECATED, 留历史回溯)。`kind=graph` 异步路 (Stage B 增强) 改经 Neon `task_queue` + `FOR UPDATE SKIP LOCKED` 轮询。
 
 ### Persistence and Logging for Multi-Component Space
 

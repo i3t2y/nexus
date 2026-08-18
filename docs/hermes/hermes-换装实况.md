@@ -387,3 +387,19 @@ model:
 - HF Restart → boot log 验双行 `persist-neon daemon up (→ Neon, interval=600s)` + `persist-r2 snapshot daemon up (→ R2, source=Neon, interval=1800s)`;`persist-r2.log` 首周期 synced 四表。
 
 **回退保底**(改回 Supabase 读源):`old/spaces/hermes/scripts/persist_to_r2.py` + `restore_from_r2.py`(commit `d96c408` 原版 Supabase 读源)+ `old/sql/00_schema.sql`(含 backup_snapshots DDL + RLS)。
+
+### 10.8 异地 Agent 指挥路裁决(Gork 首席架构核证,2026-08-18)
+
+旧架构原作者 Gork 首席裁决 + 仓内 grep/Read + anysearch(CNB NPM/docs.cnb.cool/Neon SkipLocked/持久化)核证。三裁决点全确认,两校正,WorkBuddy 路废。记忆件 `nexus-gork-arbiter-ruling-verified-2026-08-18`。
+
+**① nexus-worker MCP stdio 桥废**:`hermes/mcp/nexus_worker_mcp.py`(194 行)换装后零引用(grep 全仓无 import/config/路径);Hermes Agent 改走原生 plugin `scripts/plugins/nexus-r2/` 三 tool(`nexus_call_claude`/`nexus_call_codex`/`nexus_route_langgraph`)经 `libs/shared/gateway.call_space` 直调下游 Space,替掉本 stdio 中转。子在 HF 收益小(worker 本就另一 Space),真隔离靠 Space 边界 + task_queue 队列。文件顶注 + 两份 `mcp-server-for-hermes.md` + `SKILL.md:288` 全标 DEPRECATED,不再 `hermes mcp add nexus-worker`。
+
+**② kind=graph 两路并存**:同步 plugin `route_langgraph`(短图/用户等/超时内)+ 异步 `kind=graph` poll(长图/后台,Worker `poll_worker_tasks.py` 接 pending+kind=graph)。Stage A 已留 `kind='graph'`入 task_queue enum,Stage B 只通 `kind=npc` 优先,`kind=graph` 异步非阻塞。
+
+**③ Upstash→Neon task_queue + FOR UPDATE SKIP LOCKED**:`FOR UPDATE SKIP LOCKED` PG 9.5+ 标准,Neon 官方 `queue-system.md` 指南同路;Stage A 表已建 `idx_task_queue_status_kind (status, kind)` 复合索引符性能要。旧 Upstash BLPOP 思想(pending→claimed→done)保,实现换 Neon 表。补校正:Neon Free .25 CU max_connections=112,poll 唤醒靠 cron-job.org /health auto-wake 不靠长连(scale-to-zero 5min 必挂),poll 频率须 >5min 避烧 CU-h 配额。
+
+**持久化 "另辟路径 nexus-persist-r2" 校正**:Gork 措辞膨胀。仓内 `hermes/scripts/` 已存六脚本(persist_to_neon/persist_to_r2/restore_from_r2/restore_home_files/home_files_uploader/restore_state+state_db_uploader)实现 "R2 主仓 + Neon 索引 + 启动/关机钩子" 三件。真缺口小:①关机 SIGTERM trap 推 R2 未确认(记忆 `nexus-hermes-statedb-malformed-fix` 提共性缺失);②boot 段 home 空/`RESTORE=1`→`restore_home_files` 触发需核 real-start.sh 是否已挂。全面已落非新挖。
+
+**CNB 连法(Stage B 待)**:三连法实据充分(Streamable HTTP `mcp.cnb.cool/mcp` / SSE `/sse` / STDIO `npx -y -p @cnbcool/mcp-server cnb-mcp-stdio`)+ 派 NPC 双路(Issue `@npc/CodeBuddy` `issue.comment@npc` 触发 / OpenAPI `POST /{repo}/-/build/start` event=`api_trigger_npc` npc.name=CodeBuddy),模型 `deepseek-v4-flash`。**两盲区**:① HF 容器出网 `api.cnb.cool`/`mcp.cnb.cool` 可达性未证(同 telegram SNI 黑名单机制风险,记忆 `nexus-hermes-telegram-cfworker`);② STDIO/MCP 路需 Node ≥18+npx,装 Node 重 build base 付费墙。**Stage B 先 OpenAPI curl 路**(无 Node 依赖、省付费墙),走通再议升 MCP。
+
+**WorkBuddy 路废**:CodeBuddy 官页提 WorkBuddy = 腾讯 CodeBuddy 桌面/IM 客户端;异地 Agent 路由不须 IM 桌面出口。kind 枚举收 `{generic|graph|npc|claude_code|pi}`(移 `workbuddy_npc`)。⚠ 冲突点:记忆 `nexus-chat-extracted-decisions-2026-08-15` 旧 user 曾拍 WorkBuddy 路保留 — Gork 路冲突时仍需 user 复核,非单方裁。

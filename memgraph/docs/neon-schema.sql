@@ -60,7 +60,10 @@ create table if not exists task_queue (
     status       text not null default 'pending',
     -- pending | running | completed | failed (保留写端 enum, 不迁 queued|claimed)
     kind         text not null default 'generic',
-    -- generic | npc | workbuddy_npc | claude_code | pi | graph ...
+    -- generic | graph | npc | claude_code | pi
+    -- (2026-08-18 Gork 裁决: kind=workbuddy_npc 路废, WorkBuddy IM 桌面出口移除;
+    --  异地编码走 kind=npc → CNB CodeBuddy 云端 Agent, 非本机桥;
+    --  kind=graph 两路并存: 同步 plugin route_langgraph 短图 + 异步 task_queue+SkipLocked poll 长图[Stage B 增强])
     input        jsonb       not null default '{}'::jsonb,
     output       jsonb,
     result       text,                    -- 兼容旧读端; 正式结果优先 output

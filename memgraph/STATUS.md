@@ -41,8 +41,14 @@ GitHub i3t2y/nexus (版本化真源, public)
   → 扁平表 (task_id PK / task / user_id / status[pending|running|completed|failed]
   / kind / input jsonb / output jsonb / result / attempts / updated_at + touch trigger);
   新增 kind/input/output/attempts/updated_at 供 Stage B 本机桥 WHERE kind='npc';
-  Stage B (下周) 扫 pending+kind=npc → CNB OpenAPI 或 Issue @npc, 成败回写 Neon
-  待续; act/delegate 本轮先 generic 兜底, kind='npc' 智能解析属 Stage B 触发
+  Stage B (下周) 扫 pending+kind=npc → CNB CodeBuddy 云端 Agent (Issue @npc/CodeBuddy
+  或 OpenAPI /-/build/start api_trigger_npc, Gork 2026-08-18 裁决 workbuddy_npc 路废
+  WorkBuddy 桌面出口移除 → kind 枚举收 {generic|graph|npc|claude_code|pi}), 成败
+  回写 Neon output; Stage B 先 OpenAPI curl 无 Node 依赖 (MCP stdio 需装 Node 重
+  build base 付费墙, 走通再议升 MCP); act/delegate 本轮先 generic 兜底, kind='npc'
+  智能解析属 Stage B 触发; kind=graph 两路并存 (同步 plugin route_langgraph 短图 +
+  异步 task_queue + FOR UPDATE SKIP LOCKED poll 长图[Stage B 增强]); 消费模式保
+  "有消费者扫 pending" (旧 Upstash BLPOP 思想→Neon SkipLocked 表, Gork 裁定)
 
 ## 状态 (2026-08-18)
 - ✅ memlg Space RUNNING, /health ok (不碰 Neon, let it scale-to-zero)

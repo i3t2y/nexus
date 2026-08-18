@@ -231,7 +231,10 @@ def _write_task_to_neon(task: str, user_id: str = "default", kind: str = "generi
 
     Stage A (2026-08-18): 签名加 kind+input; 删自撜 DDL 改靠 neon-schema.sql 权威建表
     (治双 DDL 冲突根因); task 列仍写 goal 摘要兜底, 结构化字段进 input jsonb。
-    本轮 act/delegate 先传 kind='generic' 兜底, kind='npc' 智能解析属 Stage B 触发。
+    本轮 act/delegate 先传 kind='generic' 兜底, kind='npc' 智能解析属 Stage B 触发
+    (Stage B: 本机桥逆扫 WHERE status='pending' AND kind='npc' → CNB CodeBuddy 云端
+    Agent, Issue @npc/CodeBuddy 或 OpenAPI /-/build/start api_trigger_npc; Gork 2026-08-18
+    裁决 workbuddy_npc 路废, WorkBuddy 桌面出口移除)。
     """
     try:
         import psycopg

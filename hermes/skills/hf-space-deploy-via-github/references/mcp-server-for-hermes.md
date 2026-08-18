@@ -114,6 +114,8 @@ The `mcp` Python SDK must be installed (`pip install mcp`). If not installed, `h
 
 ## Full Example: nexus-worker MCP Server
 
+> ⚠ **DEPRECATED (2026-08-18, Gork 首席架构裁决 + 仓内核证)**: nexus-worker MCP stdio 桥换装后**废弃**。Hermes Agent 走原生 plugin `scripts/plugins/nexus-r2/` 三 tool (nexus_call_claude / nexus_call_codex / nexus_route_langgraph) 经 `libs/shared/gateway.call_space` 直调下游 Space, 替掉本 stdio 中转。本文件仓内零引用, 不再 `hermes mcp add nexus-worker`。本节留作旧架构历史回溯。现役真态见 `docs/hermes/hermes-换装实况.md` §2 + §10。`kind=graph` 异步路 (Stage B 增强) 改经 Neon `task_queue` + `FOR UPDATE SKIP LOCKED` 轮询, 非本 MCP 桥。
+
 See `/opt/data/.hermes/mcp/nexus_worker_mcp.py` for a production MCP server that exposes:
 - `run_worker(task, user_id)` — POST to LangGraph worker `/worker/run`
 - `worker_health()` — GET `/worker/health`
