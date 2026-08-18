@@ -37,6 +37,12 @@ GitHub i3t2y/nexus (版本化真源, public)
 - `task_queue` / `space_health` — 辅助表
 - 不含 `backup_snapshots` (R2 副路 manifest-only 不走 DB)
 - DDL: `docs/neon-schema.sql` (幂等, 不需要 RLS)
+- `task_queue` (memlg 专属; hermes 不双写): Stage A 2026-08-18 统一双 DDL
+  → 扁平表 (task_id PK / task / user_id / status[pending|running|completed|failed]
+  / kind / input jsonb / output jsonb / result / attempts / updated_at + touch trigger);
+  新增 kind/input/output/attempts/updated_at 供 Stage B 本机桥 WHERE kind='npc';
+  Stage B (下周) 扫 pending+kind=npc → CNB OpenAPI 或 Issue @npc, 成败回写 Neon
+  待续; act/delegate 本轮先 generic 兜底, kind='npc' 智能解析属 Stage B 触发
 
 ## 状态 (2026-08-18)
 - ✅ memlg Space RUNNING, /health ok (不碰 Neon, let it scale-to-zero)

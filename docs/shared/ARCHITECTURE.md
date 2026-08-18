@@ -16,7 +16,9 @@
 │  └→ memories 表 (mem0, pgvector 2048维)             │
 │  └→ agent_states / task_logs / long_memory /        │
 │    skills_index (hermes 结构化四表)                  │
-│  └→ task_queue / space_health (辅助)                │
+│  └→ task_queue (memlg 专属; 扁平表 + kind/input,    │
+│     Stage A 2026-08-18 详见 memgraph/STATUS.md)     │
+│  └→ space_health (辅助)                             │
 ├─────────────────────────────────────────────────────┤
 │  Cloudflare R2  灾备快照层 (副路)                    │
 │  └→ supabase-snapshot/{四表}.json                   │

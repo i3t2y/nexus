@@ -47,19 +47,33 @@ drop trigger if exists long_memory_touch on long_memory;
 create trigger long_memory_touch before update on long_memory
 for each row execute function touch_updated_at();
 
--- 4. 异步任务队列 ----------------------------------------------------
+-- 4. 异步任务队列 (memlg 专属; hermes 不双写) -------------------------
+-- 2026-08-18: 按写端扁平表对齐, 推翻旧 thread_id/payload/queued|claimed 体系
+--   (旧体系与 graph/__init__.py 自撜表字段全异, INSERT 列不存在 + status 违 check 报错)
+--   统一形状: task_id PK / task 文案兜底 / user_id / status[pending|running|completed|failed]
+--   + kind/input/output/attempts/updated_at (Stage A, 供 Stage B 本机桥 WHERE kind='npc')
+-- 注意: 若旧库已跑过 thread_id 那套, 先 DROP TABLE task_queue; 再跑本段 (新库直接 CREATE OK)
 create table if not exists task_queue (
-    thread_id       text primary key,
-    space           text        not null,
-    payload         jsonb       not null default '{}'::jsonb,
-    status          text        not null default 'queued',
-    result          jsonb,
-    idempotency_key text        unique,
-    created_at      timestamptz not null default now(),
-    claimed_at      timestamptz,
-    constraint task_queue_status_chk check (status in ('queued','claimed','done','error'))
+    task_id      text primary key,
+    task         text,                    -- 人读摘要兜底; 正式结构进 input jsonb
+    user_id      text,
+    status       text not null default 'pending',
+    -- pending | running | completed | failed (保留写端 enum, 不迁 queued|claimed)
+    kind         text not null default 'generic',
+    -- generic | npc | workbuddy_npc | claude_code | pi | graph ...
+    input        jsonb       not null default '{}'::jsonb,
+    output       jsonb,
+    result       text,                    -- 兼容旧读端; 正式结果优先 output
+    attempts     int         not null default 0,
+    created_at   timestamptz default now(),
+    updated_at   timestamptz default now(),
+    completed_at timestamptz
 );
-create index if not exists task_queue_status_idx on task_queue (status, created_at);
+create index if not exists idx_task_queue_status_kind on task_queue (status, kind);
+
+drop trigger if exists task_queue_touch on task_queue;
+create trigger task_queue_touch before update on task_queue
+for each row execute function touch_updated_at();
 
 -- 5. Skills 索引 -----------------------------------------------------
 create table if not exists skills_index (

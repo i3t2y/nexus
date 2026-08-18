@@ -226,8 +226,13 @@ def _write_file_to_space(filename: str, content: str) -> str:
         return ""
 
 # ── Neon 任务表写入 (delegate 分支) ─────────────────────────────────────
-def _write_task_to_neon(task: str, user_id: str = "default") -> str:
-    """将委托任务写入 Neon task_queue 表, 返回 task_id"""
+def _write_task_to_neon(task: str, user_id: str = "default", kind: str = "generic", input: dict | None = None) -> str:
+    """将委托任务写入 Neon task_queue 表, 返回 task_id
+
+    Stage A (2026-08-18): 签名加 kind+input; 删自撜 DDL 改靠 neon-schema.sql 权威建表
+    (治双 DDL 冲突根因); task 列仍写 goal 摘要兜底, 结构化字段进 input jsonb。
+    本轮 act/delegate 先传 kind='generic' 兜底, kind='npc' 智能解析属 Stage B 触发。
+    """
     try:
         import psycopg
         from datetime import datetime, timezone
@@ -241,23 +246,15 @@ def _write_task_to_neon(task: str, user_id: str = "default") -> str:
             connect_timeout=10,
         )
         cur = conn.cursor()
-        # 建表 (如果不存在)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS task_queue (
-                task_id TEXT PRIMARY KEY,
-                task TEXT NOT NULL,
-                user_id TEXT DEFAULT 'default',
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                completed_at TIMESTAMPTZ,
-                result TEXT
-            )
-        """)
+        # 不再自撜 CREATE TABLE — 靠 neon-schema.sql 权威建表 (Stage A 消灭双 DDL)
         import uuid
+        import json
         task_id = f"task_{uuid.uuid4().hex[:12]}"
+        input_json = json.dumps(input or {"goal": task}, ensure_ascii=False)
         cur.execute(
-            "INSERT INTO task_queue (task_id, task, user_id, status) VALUES (%s, %s, %s, 'pending')",
-            (task_id, task[:2000], user_id),
+            "INSERT INTO task_queue (task_id, task, user_id, status, kind, input) "
+            "VALUES (%s, %s, %s, 'pending', %s, %s)",
+            (task_id, task[:2000], user_id, kind, input_json),
         )
         conn.commit()
         cur.close()
@@ -648,7 +645,8 @@ async def worker_tasks(status: str = "pending", limit: int = 10):
         )
         cur = conn.cursor()
         cur.execute(
-            "SELECT task_id, task, user_id, status, created_at, completed_at, result "
+            "SELECT task_id, task, user_id, status, kind, input, output, attempts, "
+            "created_at, completed_at, result "
             "FROM task_queue WHERE status = %s ORDER BY created_at LIMIT %s",
             (status, limit),
         )
@@ -662,9 +660,13 @@ async def worker_tasks(status: str = "pending", limit: int = 10):
                 "task": r[1],
                 "user_id": r[2],
                 "status": r[3],
-                "created_at": str(r[4]) if r[4] else None,
-                "completed_at": str(r[5]) if r[5] else None,
-                "result": r[6],
+                "kind": r[4],
+                "input": r[5],
+                "output": r[6],
+                "attempts": r[7],
+                "created_at": str(r[8]) if r[8] else None,
+                "completed_at": str(r[9]) if r[9] else None,
+                "result": r[10],
             })
         return {"tasks": tasks, "count": len(tasks)}
     except Exception as e:
@@ -693,6 +695,9 @@ async def update_task(task_id: str, req: Request):
     body = await req.json()
     new_status = body.get("status", "completed")
     result_text = body.get("result", "")
+    # Stage A: output jsonb 优先写正式结构化结果; result text 兼容旧读端
+    output_json = body.get("output")  # dict 或 str, None 则跳过
+    output_str = json.dumps(output_json, ensure_ascii=False) if isinstance(output_json, (dict, list)) else output_json
 
     try:
         import psycopg
@@ -706,11 +711,19 @@ async def update_task(task_id: str, req: Request):
             connect_timeout=10,
         )
         cur = conn.cursor()
-        cur.execute(
-            "UPDATE task_queue SET status=%s, result=%s, completed_at=now() "
-            "WHERE task_id=%s RETURNING task_id",
-            (new_status, result_text[:5000], task_id),
-        )
+        if output_str is not None:
+            cur.execute(
+                "UPDATE task_queue SET status=%s, result=%s, output=%s::jsonb, "
+                "updated_at=now(), completed_at=now() "
+                "WHERE task_id=%s RETURNING task_id",
+                (new_status, result_text[:5000], output_str, task_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE task_queue SET status=%s, result=%s, updated_at=now(), completed_at=now() "
+                "WHERE task_id=%s RETURNING task_id",
+                (new_status, result_text[:5000], task_id),
+            )
         updated = cur.fetchone()
         conn.commit()
         cur.close()
