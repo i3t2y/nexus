@@ -4,8 +4,14 @@
 # pin 版本对齐各 Space 现有 requirements.txt
 
 # === hermes + claude-code + codex 共用 ===
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+# 2026-08-19 批3 修:对齐 hermes-agent v2026.8.18 pyproject [web] extra 强 pin。
+# 根因:批2 仅升 starlette→1.3.1(mcp 段)未升 fastapi/uvicorn → fastapi 0.115.6 仍传 on_startup
+# kwarg 给 starlette Router.__init__,starlette 1.x 删该 kwarg → FastAPI() 构造当场 TypeError
+# (dashboard 崩循环 "Router.__init__() got unexpected keyword 'on_startup'")。
+# fastapi 0.133.1 改纯 lifespan 路径不传 on_startup,适配 starlette 1.x — 根因修复。
+# (v8.18 [web] extra:pyproject.toml:334 "fastapi==0.133.1,uvicorn[standard]==0.41.0,starlette==1.3.1")
+fastapi==0.133.1
+uvicorn[standard]==0.41.0
 gradio==5.9.1
 httpx==0.28.1
 supabase==2.31.0
@@ -49,7 +55,7 @@ pyyaml==6.0.3
 ruamel.yaml==0.18.17
 requests==2.33.0
 jinja2==3.1.6
-pydantic==2.13.4       # hermes 要 2.13.4;fastapi 0.115.6 兼容
+pydantic==2.13.4       # hermes 要 2.13.4;fastapi 0.133.1 兼容
 prompt_toolkit==3.0.52
 croniter==6.0.0
 # packaging:hermes core 要 ==26.0,但 langchain-core==0.3.40(line21)钳 <25,>=23.2 相斥。
