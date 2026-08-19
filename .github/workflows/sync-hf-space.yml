@@ -2,7 +2,7 @@
 # 永续改造"墓碑层":Dockerfile(墓碑 ARG BASE_IMAGE)+ README.md(HF frontmatter)+ start.sh(boot)三件
 # 触发 HF Space 收到 repo push → 自动 rebuild Dockerfile 拉取 ghcr.io/i3t2y/nexus-base:stable。
 #
-# 触发:手动 workflow_dispatch 或 push 涉 spaces/hermes/{Dockerfile,README.md,start.sh} 变更。
+# 触发:手动 workflow_dispatch 或 push 涉 hermes/space/{Dockerfile,README.md,start.sh} 变更。
 # 路径 = C(免费 HF 账号无 HF Sources 自动同步):GitHub Actions 用 HF_H_TOKEN git push 三件进 HF Space repo 根。
 #
 # 前提(GitHub repo Settings → Secrets and variables → Actions):
@@ -19,7 +19,7 @@
 # 前提(HF 侧):Space repo huggingface.co/spaces/sonoke/h 须已手动创建(空白即可)。
 #   首次 push 后 HF 自动识别 README.md frontmatter sdk:docker 触发 Dockerfile rebuild。
 #
-# 三件源头在 nexus 源仓 spaces/hermes/ 子目录;HF Space repo 期望根目录对齐(改名 cp)。
+# 三件源头在 nexus 源仓 hermes/space/ 子目录;HF Space repo 期望根目录对齐(改名 cp)。
 name: Sync hermes 三件 → HF Space (sonoke/h)
 
 on:
@@ -27,9 +27,9 @@ on:
   push:
     branches: [main]
     paths:
-      - "spaces/hermes/Dockerfile"
-      - "spaces/hermes/README.md"
-      - "spaces/hermes/start.sh"
+      - "hermes/space/Dockerfile"
+      - "hermes/space/README.md"
+      - "hermes/space/start.sh"
       - ".github/workflows/sync-hf-space.yml"
 
 env:
@@ -62,7 +62,7 @@ jobs:
       - name: 拷贝三件 → HF repo 根(覆盖)
         run: |
           set -e
-          src="spaces/hermes"
+          src="hermes/space"
           dst="hf-space"
           for f in Dockerfile README.md start.sh; do
             cp "${src}/${f}" "${dst}/${f}"
