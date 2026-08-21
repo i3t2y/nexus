@@ -449,7 +449,12 @@ def act(state: WorkerState) -> WorkerState:
 
     elif action == "delegate":
         # 委托: 写 Neon task_queue 表
-        task_id = _write_task_to_neon(state["task"], state.get("user_id", "default"))
+        task_id = _write_task_to_neon(
+            state["task"],
+            state.get("user_id", "default"),
+            kind='generic',
+            input={"goal": state["task"]},
+        )
         if task_id:
             state["action_result"] = f"[已入队] task_id={task_id} 等待执行: {state['task'][:150]}"
         else:
