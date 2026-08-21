@@ -120,31 +120,47 @@ if [ -f "$APP_DIR/scripts/restore_state.py" ]; then
   python "$APP_DIR/scripts/restore_state.py" 2>&1 | sed 's/^/[real-start] /'
 fi
 
-# 后台:Neon 持久化同步主路(结构化四表直接写 Neon, 2026-08-17 替代旧 Supabase+R2)
-# ★2026-08-17 HTTP /sql 重构: psycopg2 → httpx 裸调 Neon /sql 端点
-#   - 每次 query = 独立 HTTP POST, 完即断, 不占 TCP 连接 → Neon 自然 scale-to-zero
-#   - SYNC_INTERVAL_SEC 默认 600s (> Neon Free 5min auto-suspend → 保证 suspend)
-#   - CU-h ~0.5-3/月 (vs 原 psycopg2 长连接 180 CU-h/月超额)
-# ★2026-08-18 R2 副路恢复: persist_to_r2.py 读源改 Neon(HTTP /sql),R2 作快照备份层。
-#   两 daemon 互独立:POSTGRES_HOST 单有 → 只 Neon 主路 600s;加 R2_ENDPOINT → 双起 1800s。
-if [ -n "${POSTGRES_HOST:-}" ]; then
-  export SYNC_INTERVAL_SEC="${SYNC_INTERVAL_SEC:-600}"
-  echo "[real-start] persist-neon daemon up (→ Neon ${POSTGRES_HOST}/${POSTGRES_DB:-neondb}, interval=${SYNC_INTERVAL_SEC}s, HTTP /sql mode)"
-  nohup python "$APP_DIR/scripts/persist_to_neon.py" >"${LOG_DIR:-/opt/data/logs}/persist-neon.log" 2>&1 &
-  PERSIST_NEON_PID=$!
+# ── R2 快照恢复(★2026-08-22 snapshots/<ts>/ 不可变 blob 恢复段) ──
+# 从 R2 MANIFEST.json → objects.*.key → 下载 → sha256 校验 → upsert 回 Neon。
+# 门控:R2_ENDPOINT + R2_ACCESS_KEY_ID + POSTGRES_HOST 三 presence。
+# 仅在首启(无 state.db 或显式 RESTORE_FROM_R2=1)时执行,避免每次重启覆盖 Neon 最新数据。
+# 幂等:ON CONFLICT 主键覆盖,重跑安全。
+if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ] && [ -n "${POSTGRES_HOST:-}" ]; then
+  if [ "${RESTORE_FROM_R2:-0}" = "1" ] || [ ! -f "$HERMES_HOME/.restore_done" ]; then
+    echo "[real-start] r2 restore from R2 snapshots (RESTORE_FROM_R2=${RESTORE_FROM_R2:-0})"
+    if [ -f "$APP_DIR/scripts/restore_from_r2.py" ]; then
+      python "$APP_DIR/scripts/restore_from_r2.py" --all 2>&1 | sed 's/^/[real-start] /'
+      touch "$HERMES_HOME/.restore_done"
+    fi
+  else
+    echo "[real-start] r2 restore skip (already done, set RESTORE_FROM_R2=1 to force)"
+  fi
 else
-  echo "[real-start] persist-neon daemon skip (need POSTGRES_HOST)"
+  echo "[real-start] r2 restore skip (need R2_ENDPOINT+R2_ACCESS_KEY_ID+POSTGRES_HOST)"
 fi
 
-# 后台:Neon → R2 快照备份副路(★2026-08-18 恢复,读源=Neon HTTP /sql 正交主路)
-# R2 作灾备快照层:persist_to_r2.py 周期读 Neon 四表 → 原子上传 R2 JSON snapshot +
-#   _manifest.json(manifest-only,不进 Neon backup_snapshots 表)。restore_from_r2.py 反向闭环。
+# 后台:Neon 持久化同步主路(2026-08-22 去心跳版)
+# 2026-08-22 收口版合同: 移除定时 SQL 心跳, 让 Neon 自然休眠。
+# persist_to_neon.py --init: boot 期一次幂等建表 + 连接测试, 不跑 daemon。
+# 四表(agent_states/task_logs/long_memory/skills_index)由 hermes 进程内直接写
+# (persist_to_neon.py 2026-08-17 重构后实为健康检查 daemon, 2026-08-22 改为 --init 模式)。
+if [ -n "${POSTGRES_HOST:-}" ]; then
+  echo "[real-start] persist-neon init (DDL once, no daemon)"
+  python "$APP_DIR/scripts/persist_to_neon.py" --init 2>&1 | sed 's/^/[real-start] /'
+else
+  echo "[real-start] persist-neon skip (need POSTGRES_HOST)"
+fi
+
+# 后台:Neon → R2 快照备份副路(★2026-08-22 snapshots/<ts>/ 不可变 blob)
+# R2 作灾备快照层:persist_to_r2.py 周期读 Neon 四表 → snapshots/<ts>/ 不可变 JSON +
+#   MANIFEST.json(gen/ts/objects 指针,不进 Neon backup_snapshots 表)。
+# restore_from_r2.py 反向闭环:读 MANIFEST.objects → 下载 → 校验 → upsert 回 Neon。
 # 门控:R2_ENDPOINT + R2_ACCESS_KEY_ID + POSTGRES_HOST 三 presence 缺则 skip WARN(不 fail boot)。
 #   POSTGRES_HOST 单有→只 Neon 主路 600s;加 R2_ENDPOINT→双起 R2 副路 1800s(30min,快照层低频)。
-#   R2 Class A 写 4 表×3 步/次×48 次/天 ≈ 9600/天 << 免费额 1000万/月。
+#   R2 Class A 写 4 表×1 次/周期×48 次/天 ≈ 192/天 << 免费额 1000万/月(移除了 _atomic_upload 三步法后)。
 if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ] && [ -n "${POSTGRES_HOST:-}" ]; then
   export R2_SYNC_INTERVAL_SEC="${R2_SYNC_INTERVAL_SEC:-1800}"
-  echo "[real-start] persist-r2 snapshot daemon up (→ R2 ${R2_BUCKET:-nexus-checkpoints}/supabase-snapshot/, source=Neon, interval=${R2_SYNC_INTERVAL_SEC}s)"
+  echo "[real-start] persist-r2 snapshot daemon up (→ R2 ${R2_BUCKET:-nexus-checkpoints}/snapshots/<ts>/, source=Neon, interval=${R2_SYNC_INTERVAL_SEC}s)"
   nohup python "$APP_DIR/scripts/persist_to_r2.py" >"${LOG_DIR:-/opt/data/logs}/persist-r2.log" 2>&1 &
   PERSIST_R2_PID=$!
 else
@@ -170,8 +186,9 @@ else
 fi
 
 # 后台:下游 Space 保活探测
-# 默认开:omniroute(主推理路径)+ 下游三 Space 依赖保活防 48h 休眠;KEEPALIVE_ENABLED=0 可关。
-KEEPALIVE_ENABLED="${KEEPALIVE_ENABLED:-1}"
+# 2026-08-22 单 Space 部署: 三下游已取消, omniroute 不依赖保活。
+# 默认关(KEEPALIVE_ENABLED=0); cron-job.org 单路 GET /health 15-25min 已够。
+KEEPALIVE_ENABLED="${KEEPALIVE_ENABLED:-0}"
 if [ "$KEEPALIVE_ENABLED" = "1" ]; then
   echo "[real-start] keepalive daemon up"
   nohup python "$APP_DIR/scripts/keepalive.py" >"$LOG_DIR/keepalive.log" 2>&1 &
@@ -197,11 +214,12 @@ fi
 # 改:boot 改后台 & 记 BOOT_PID + `wait $BOOT_PID`(wait 可被 trap 中断)→ trap
 #   on_shutdown TERM INT 触发:
 #   1. kill -TERM boot 子进程(hermes 内部 gateway/dashboard daemon thread 收子进程 TERM → shutdown)
-#   2. kill -TERM 四 persist daemon + keepalive(各脚本已装 signal handler → 跑最后 sync_once flush + exit 0)
+#   2. kill -TERM 三 persist daemon + keepalive(persist 各脚本已装 signal handler → flush + exit 0)
+#     ★2026-08-22: persist-neon 已改 --init 模式, 无 daemon, 不在此列
 #   3. sleep 10 约等 flush 完成(各 _INTERVAL 最短 300s 但信号立即中断 sleep_check 1s 粒度 → 实际 flush 启动秒级)
 #   4. exit 0(HF 容器期望干净退出,restart 复活)
 BOOT_PID=""
-# 五 daemon PID 源自上方 if 段已记(变量未设则空串,kill 跳)
+# 三 persist daemon PID + keepalive(变量未设则空串,kill 跳)
 on_shutdown() {
   echo "[real-start] SIGTERM/INT recv, graceful shutdown..."
   # boot 子进程先 TERM(让 hermes 内部 shutdown daemon thread)
@@ -209,8 +227,8 @@ on_shutdown() {
     kill -TERM "$BOOT_PID" 2>/dev/null
     echo "[real-start] sent TERM to boot pid=$BOOT_PID"
   fi
-  # 四 persist daemon + keepalive:各脚本 _on_sigterm handler 触发最后一次 sync_once 后 exit
-  for pid in "${PERSIST_NEON_PID:-}" "${PERSIST_R2_PID:-}" "${STATE_PID:-}" "${HOME_PID:-}" "${KEEPALIVE_PID:-}"; do
+  # 三 persist daemon + keepalive:各脚本 _on_sigterm handler 触发最后一次 sync_once 后 exit
+  for pid in "${PERSIST_R2_PID:-}" "${STATE_PID:-}" "${HOME_PID:-}" "${KEEPALIVE_PID:-}"; do
     [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null && echo "[real-start] sent TERM to daemon pid=$pid"
   done
   # 等 flush(persist 各 _sleep_check 1s 粒度响应快;10s 兜底防慢网)

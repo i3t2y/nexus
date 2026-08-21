@@ -2,15 +2,16 @@
 
 原链(2026-08 前):Supabase 读 → R2 快照(双保险)。
 2026-08-17 Supabase→Neon 全量迁移后 R2 daemon 切走,本脚本变死 code。
-2026-08-18 恢复 R2 作快照备份层:**读源从 Supabase 改 Neon**(HTTP /sql 端点),
-R2 作副路快照,boto3 原子上传 + manifest.json 索引 + sha256 完整性校验全保留。
+2026-08-18 恢复 R2 作快照备份层:读源从 Supabase 改 Neon HTTP /sql 端点。
+2026-08-22 收口版合同简化:supabase-snapshot/ 可变路径 → snapshots/<ts>/ 不可变 blob,
+   移除 _atomic_upload CAS,MANIFEST.json 纯指针(gen/ts/objects.*.key)。
 
 与 persist_to_neon.py(主路)正交:
   - persist_to_neon.py = hermes 内部写 Neon 四表(主路持久)
   - 本脚本 = Neon 四表 → R2 JSON 快照(副路备份,灾备/审计)
   - 两 daemon 互独立,POSTGRES_HOST 单有 → 只主路;加 R2_ENDPOINT → 双起
 
-元数据(manifest-only):sha256/bytes/rows/updated_at 全放 R2 `_manifest.json`,
+元数据(manifest-only):sha256/bytes/rows/updated_at 全放 R2 MANIFEST.json objects,
 **不进 Neon backup_snapshots 表**(Neon schema 不倒退,schema 七表已砍 backup_snapshots)。
 
 环境变量:
@@ -69,8 +70,9 @@ def _sleep_check(seconds):
 
 _BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
-# manifest 索引对象 key(R2 内单文件,列各表最新快照 sha256/size,便于 restore 找最新)
-_MANIFEST_KEY = "supabase-snapshot/_manifest.json"
+# MANIFEST 指针(gen/ts/objects.*.key), snapshots/<ts>/ 不可变 blob 的索引
+# 恢复端: 读 MANIFEST → objects.*.key → 下载; 或 list snapshots/ → max(ts)
+_MANIFEST_KEY = "MANIFEST.json"
 
 
 def _env_diag() -> dict[str, bool]:
@@ -162,33 +164,28 @@ def _snapshot_table_neon(table: str) -> list[dict[str, Any]]:
     return [r["row"] if isinstance(r, dict) and "row" in r else r for r in rows]
 
 
-def _atomic_upload(r2, key: str, body: bytes) -> None:
-    """原子上传:先写 tmp key 再 copy 到目标 key。
-    借鉴 HermesFace save_to_dataset_atomic 思路(HF Dataset 无原子写,R2 用 copy 模拟)。
-    避免读到写一半的文件。
-    """
-    tmp = f"_tmp/{key}.partial"
-    r2.put_object(Bucket=_BUCKET, Key=tmp, Body=body)
-    # R2 CopyObject 属 Class A 操作(计费),仅 Class B 出口免费。
-    # 生产需注意额度:4 表 × 每次三步 ≈ 10 万 Class A/月仍属免费层 (100 万/月) 内。
-    r2.copy_object(
-        Bucket=_BUCKET,
-        Key=key,
-        CopySource={"Bucket": _BUCKET, "Key": tmp},
-    )
-    r2.delete_object(Bucket=_BUCKET, Key=tmp)
-
-
 def _now_iso() -> str:
     """UTC ISO8601 时间戳(datetime 真实可用,与 errors.log_event 一致)。"""
     return datetime.now(timezone.utc).isoformat()
 
 
+def _read_manifest(r2) -> dict[str, Any]:
+    """读当前 MANIFEST.json,返回 {gen, ts, objects} 或默认 gen=0。"""
+    try:
+        resp = r2.get_object(Bucket=_BUCKET, Key=_MANIFEST_KEY)
+        return json.loads(resp["Body"].read())
+    except r2.exceptions.NoSuchKey:
+        return {"gen": 0, "ts": _now_iso(), "objects": {}}
+
+
 def sync_once() -> dict[str, Any]:
     r2 = _r2()
     counts: dict[str, Any] = {}
-    manifest: dict[str, Any] = {}
+    manifest = _read_manifest(r2)
+    gen = manifest.get("gen", 0) + 1
     ts = _now_iso()
+    snap_dir = f"snapshots/{ts}/"
+    objects: dict[str, Any] = {}
     for t in _TABLES:
         try:
             rows = _snapshot_table_neon(t)
@@ -197,29 +194,33 @@ def sync_once() -> dict[str, Any]:
             continue
         try:
             body = json.dumps(rows, ensure_ascii=False, default=str).encode()
-            key = f"supabase-snapshot/{t}.json"
-            _atomic_upload(r2, key, body)
-            # 完整性校验和:sha256 + 字节数;restore 时复算比对挡 R2 静默损坏/截断
+            key = f"{snap_dir}{t}.json"
+            # 不可变 blob:直接 PUT,无 CAS 无 tmp→copy 模拟(收口合同:同时只开一台 Hermes)
+            r2.put_object(Bucket=_BUCKET, Key=key, Body=body)
             sha = hashlib.sha256(body).hexdigest()
             counts[t] = {"rows": len(rows), "sha256": sha, "bytes": len(body)}
-            manifest[t] = {
-                "r2_key": key,
+            objects[t] = {
+                "key": key,
                 "sha256": sha,
                 "bytes": len(body),
                 "rows": len(rows),
-                "updated_at": ts,
             }
         except Exception as e:  # noqa: BLE001
             counts[f"{t}_r2_err"] = f"[{type(e).__name__}] {e}"
             continue
-    # 写 manifest 索引(各表最新 sha256/size + rows + updated_at),便于 restore 一步定位 + 完整性校对
-    # manifest-only:元数据不进 Neon backup_snapshots 表(D2 决策)。
-    if manifest:
+    # 写 MANIFEST 指针:gen 递增,ts 当前,objects 指向各表不可变 blob
+    if objects:
+        manifest = {
+            "gen": gen,
+            "ts": ts,
+            "objects": objects,
+        }
         try:
-            _atomic_upload(r2, _MANIFEST_KEY, json.dumps(manifest, ensure_ascii=False).encode())
+            r2.put_object(Bucket=_BUCKET, Key=_MANIFEST_KEY, Body=json.dumps(manifest, ensure_ascii=False).encode())
         except Exception as e:  # noqa: BLE001
             counts["_manifest_err"] = str(e)
-    counts["_manifest_ts"] = ts
+    counts["_gen"] = gen
+    counts["_snapshots_ts"] = ts
     return counts
 
 

@@ -1,28 +1,22 @@
-"""Neon Postgres 持久化同步（替代 persist_to_r2.py, 2026-08-17）。
+"""Neon DDL 初始化 + 轻量健康检查（2026-08-22 去心跳版）。
 
-原 persist_to_r2.py: Supabase 读 → R2 快照 (双保险)
-本脚本: 通过 Neon HTTP /sql 端点写入结构化四表 (Neon 本身就是持久化)
-
-=== 2026-08-17 重构: psycopg2 → httpx HTTP /sql ===
-原 psycopg2 长连接 + while True sleep(300) 阻止 Neon scale-to-zero → 180 CU-h/月超额
-新方案: 每次同步 = 独立 HTTP POST 到 Neon /sql 端点, 完即断
-  - 不占 TCP 连接 → Neon 5min 闲置后自然 suspend → CU-h ~0.5-3/月
-  - 不依赖 psycopg2 (免 libpq 编译) → 只需 httpx (Python 主力 HTTP 库)
-  - 协议: POST https://{host}/sql, header Neon-Connection-String, body {query, params}
-  - 虽未公开文档化 (Neon PR #9827: "not public API yet, just grandfathered in")
-    但 Neon 官方 driver @neondatabase/serverless 走同一端点, 不会弃用
+原链(2026-08-17): 周期同步 daemon, 每 600s 写 space_health + 4 次 COUNT(*)。
+2026-08-22 收口版合同: 移除所有定时 SQL 心跳, 让 Neon 自然休眠。
+  本脚本职责收窄到:
+  1. --init: boot 期幂等建表 (agent_states/task_logs/long_memory/skills_index)
+  2. --once: 单次健康检查 (SELECT COUNT(*) 不写 space_health)
+  3. daemon 模式: 仅保留 SIGTERM 钩子兼容 old real-start.sh, 主体只 sleep 不做 SQL
 
 砍掉:
-  - Supabase (supabase-py) → 直接 HTTP /sql
-  - R2 (boto3) → 不需要, Neon 自己就是持久化
-  - backup_snapshots 元数据 → R2 砍了就没用了
-  - psycopg2 长连接 → httpx 短请求
+  - space_health 表 DDL + INSERT (Neon 心跳源)
+  - 周期 COUNT(*) (除非显式 --once)
+  - Supabase 残留
 
 环境变量:
   POSTGRES_HOST / POSTGRES_PORT / POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
-  SYNC_INTERVAL_SEC (默认 600 = 10分钟, > Neon 5min auto-suspend 保证 suspend)
+  SYNC_INTERVAL_SEC (仅 daemon 模式 sleep 间隔, 默认 600)
 
-表: agent_states, task_logs, long_memory, skills_index
+表: agent_states, task_logs, long_memory, skills_index (无 space_health)
 """
 from __future__ import annotations
 
@@ -139,6 +133,7 @@ def _now_iso() -> str:
 def _ensure_tables():
     """幂等建表 (如果 neon-schema.sql 没跑过)。
 
+    2026-08-22: 移除 space_health DDL (Neon 心跳源)。
     Neon HTTP /sql 不支持事务, 每条 DDL 独立请求。
     """
     ddls = [
@@ -169,13 +164,6 @@ def _ensure_tables():
             usage_count  integer   NOT NULL DEFAULT 0,
             last_used    timestamptz
         )""",
-        """CREATE TABLE IF NOT EXISTS space_health (
-            id          bigserial PRIMARY KEY,
-            space       text NOT NULL,
-            status      text NOT NULL,
-            detail      text,
-            created_at  timestamptz NOT NULL DEFAULT now()
-        )""",
     ]
     for ddl in ddls:
         try:
@@ -185,73 +173,69 @@ def _ensure_tables():
 
 
 def sync_once() -> dict[str, Any]:
-    """周期同步: 本地 state.db → Neon 四表。
+    """单次健康检查: 仅 SELECT COUNT(*) 不写 space_health。
 
-    实际上 hermes 的四表数据来自 hermes 进程内部写入。
-    本脚本的主要作用是确保表存在 + 周期健康检查。
+    2026-08-22: 移除 space_health INSERT + 仅 --once 显式调用时跑 SQL,
+    daemon 模式不再执行任何 SQL (让 Neon 自然休眠)。
     """
-    # 幂等建表 (每条独立 HTTP 请求)
-    _ensure_tables()
-
     counts: dict[str, Any] = {}
     ts = _now_iso()
-
-    # 读取每表行数 (健康检查) — 每条独立 HTTP 请求
     for t in _TABLES:
         try:
             rows = _neon_query(f'SELECT COUNT(*) AS cnt FROM public."{t}"')
             counts[t] = rows[0]["cnt"] if rows else 0
         except Exception as e:
             counts[f"{t}_err"] = f"[{type(e).__name__}] {e}"
-
-    # 写入 space_health 记录
-    try:
-        _neon_query(
-            "INSERT INTO space_health (space, status, detail, created_at) VALUES ($1, $2, $3, $4)",
-            ["hermes", "ok", json.dumps(counts), ts],
-        )
-    except Exception as e:
-        counts["space_health_err"] = f"[{type(e).__name__}] {e}"
-
     counts["_ts"] = ts
     return counts
 
 
 def main() -> None:
+    _INIT = "--init" in sys.argv
+
     print(f"[persist-neon] start, interval={_INTERVAL}s (HTTP /sql mode)", flush=True)
     print(f"[persist-neon] env diag={_env_diag()}", flush=True)
 
-    # 首次连接测试
+    # 连接测试 + 幂等建表 (boot 期一次)
     try:
         rows = _neon_query("SELECT 1 AS ok")
         print(f"[persist-neon] Neon HTTP /sql connection OK: {rows}", flush=True)
+        _ensure_tables()
+        print("[persist-neon] tables ensured", flush=True)
     except Exception as e:
-        print(f"[persist-neon] Neon HTTP /sql connection FAILED: {e}", flush=True)
+        print(f"[persist-neon] Neon connection/DDL FAILED: {e}", flush=True)
+        if _INIT:
+            sys.exit(1)
 
+    if _INIT:
+        print("[persist-neon] --init done, exit 0", flush=True)
+        sys.exit(0)
+
+    # daemon 模式: 不再执行定时 SQL, 仅保留 SIGTERM 兼容
+    # 2026-08-22 收口版合同: 禁止 Neon 定时心跳, 让 Neon 自然休眠。
+    # 此 daemon 仅保持进程存活供 real-start.sh trap 兼容, 不做任何 SQL。
     _did_once = False
     while not _SHUTDOWN:
-        try:
-            res = sync_once()
-            print(f"[persist-neon] synced {res}", flush=True)
-            _did_once = True
-        except Exception as e:
-            etype = type(e).__name__
-            msg = str(e)
-            tb = traceback.format_exc().splitlines()
-            tb_short = " | ".join(tb[-3:]) if len(tb) >= 3 else " | ".join(tb)
-            print(f"[persist-neon] fatal[{etype}] {msg} | tb={tb_short} | env={_env_diag()}", flush=True)
-        if _ONCE and _did_once:
-            print("[persist-neon] --once done, exit 0", flush=True)
-            sys.exit(0)
+        if _ONCE:
+            try:
+                res = sync_once()
+                print(f"[persist-neon] synced {res}", flush=True)
+                _did_once = True
+            except Exception as e:
+                etype = type(e).__name__
+                msg = str(e)
+                tb = traceback.format_exc().splitlines()
+                tb_short = " | ".join(tb[-3:]) if len(tb) >= 3 else " | ".join(tb)
+                print(f"[persist-neon] fatal[{etype}] {msg} | tb={tb_short}", flush=True)
+            if _did_once:
+                print("[persist-neon] --once done, exit 0", flush=True)
+                sys.exit(0)
+        # daemon 模式: 只 sleep, 不碰 Neon
         if _SHUTDOWN:
             break
         _sleep_check(_INTERVAL)
-    # 关机 final flush(收 SIGTERM 后补跑一轮确保最后状态不丢)
-    try:
-        sync_once()
-        print("[persist-neon] final flush ok on shutdown, exit 0", flush=True)
-    except Exception as e:
-        print(f"[persist-neon] final flush fail: {e}", flush=True)
+    # 关机 (不跑 SQL, 仅 exit)
+    print("[persist-neon] shutdown, exit 0", flush=True)
     sys.exit(0)
 
 

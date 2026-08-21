@@ -2,9 +2,9 @@
 # 把 hermes 逻辑层真源推 HF Storage Bucket(rw /data 挂载点)。
 # 永续改造核心入口:改逻辑后跑此脚本 + Space Settings Restart(用缓存镜像,永不 git push HF)。
 #
-# 真源沿用 git 内:
-#   spaces/hermes/app/      +  spaces/hermes/scripts/  +  根 libs/
-# 平铺进 Bucket nexus-logic/{app,scripts,libs},挂载点 /data → 容器 /data/{app,scripts,libs}
+# 真源沿用 git 内(批1 搬仓后真位,2026-08-19 对齐):
+#   hermes/app/      +  hermes/scripts/  +  hermes/libs/
+# 平铺进 Bucket {app,scripts,libs},挂载点 /data → 容器 /data/{app,scripts,libs}
 #
 # 用法:
 #   HF_TOKEN=xxx HF_OWNER=your-hf-name bash scripts/sync-logic-bucket.sh            # 推送(默认 --delete 镜像真源)
@@ -15,8 +15,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HERMES="$ROOT/spaces/hermes"
-LIBS="$ROOT/libs"
+HERMES="$ROOT/hermes"
+LIBS="$ROOT/hermes/libs"
 BUCKET_NAME="${NEXUS_LOGIC_BUCKET:-nexus-logic}"
 
 : "${HF_TOKEN:?需 HF_TOKEN env(https://huggingface.co/settings/tokens, 需写权限)}"

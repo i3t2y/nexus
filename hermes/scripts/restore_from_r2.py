@@ -1,11 +1,11 @@
-"""R2 → Neon 反向恢复(2026-08-18 重构,Supabase 读源→Neon)。
+"""R2 → Neon 反向恢复(2026-08-22 snapshots/<ts>/ 简化)。
 
-persist_to_r2.py 把 Neon 四表周期快照到 R2;本脚本做反向闭环:
-读 R2 snapshot → 复算 sha256 对比 R2 manifest 登记值(挡静默损坏/截断)→
-upsert 回 Neon 表(via HTTP /sql INSERT ... ON CONFLICT)。
+persist_to_r2.py 把 Neon 四表周期快照到 R2 snapshots/<ts>/ 不可变 blob;
+本脚本做反向闭环:读 MANIFEST.json → objects.*.key → 下载 → 复算 sha256 对比
+→ upsert 回 Neon 表(via HTTP /sql INSERT ... ON CONFLICT)。
 
-manifest-only(D2):元数据(sha256/bytes/rows)只放 R2 `_manifest.json`,不查 Neon 表。
-校验对比从 manifest 取该表最新登记,无 R2 登记则降级放行。
+manifest-only(D2):元数据(sha256/bytes/rows)只放 R2 MANIFEST.json objects,
+不查 Neon 表。校验对比从 manifest.objects 取该表登记,无登记则降级放行。
 
 命令行:
   python restore_from_r2.py --all                 # 恢复全部 _TABLES
@@ -34,7 +34,7 @@ from botocore.config import Config  # noqa: E402
 
 _BUCKET = os.getenv("R2_BUCKET", "nexus-checkpoints")
 _TABLES = ["agent_states", "task_logs", "long_memory", "skills_index"]
-_MANIFEST_KEY = "supabase-snapshot/_manifest.json"
+_MANIFEST_KEY = "MANIFEST.json"
 # 主键列名(ON CONFLICT 需要)+ 空 pk 列用 insert 而非 upsert
 _PK: dict[str, str | None] = {
     "agent_states": "thread_id",
@@ -112,7 +112,7 @@ def _neon_query(query: str, params: list | None = None) -> list[dict]:
 
 
 def _get_manifest(r2) -> dict[str, Any] | None:
-    """读 R2 manifest 对象;不存在返回 None。"""
+    """读 R2 MANIFEST.json;返回 {gen, ts, objects} 或 None。"""
     try:
         resp = r2.get_object(Bucket=_BUCKET, Key=_MANIFEST_KEY)
         return json.loads(resp["Body"].read())
@@ -128,17 +128,17 @@ def _get_snapshot_bytes(r2, key: str) -> bytes:
 
 
 def _verify(table: str, raw: bytes, manifest: dict[str, Any] | None) -> tuple[bool, str]:
-    """复算 sha256 + 字节数,对比 R2 manifest 该表登记值。manifest=None/无该表降级放行。
+    """复算 sha256 + 字节数,对比 MANIFEST.objects[table] 登记值。manifest=None/无该表降级放行。
 
-    manifest-only(D2):元数据不进 Neon backup_snapshots,校对源 = R2 _manifest.json。
+    manifest-only:元数据不进 Neon,校对源 = MANIFEST.json objects。
     """
     sha = hashlib.sha256(raw).hexdigest()
     nsize = len(raw)
     if manifest is None:
         return True, f"无 manifest(降级放行)sha256={sha}"
-    meta = manifest.get(table)
+    meta = (manifest.get("objects") or {}).get(table)
     if meta is None:
-        return True, f"manifest 无 {table} 登记(降级放行)sha256={sha}"
+        return True, f"manifest.objects 无 {table} 登记(降级放行)sha256={sha}"
     reg_sha = (meta.get("sha256") or "").strip()
     reg_size = meta.get("bytes")
     reg_rows = meta.get("rows")
@@ -154,12 +154,18 @@ def _verify(table: str, raw: bytes, manifest: dict[str, Any] | None) -> tuple[bo
 def _restore_table(r2, manifest, table: str, verify_only: bool) -> dict[str, Any]:
     """单表恢复。返回 {table, rows, verify_ok, msg, restored}。
 
+    从 manifest.objects[table].key 读取不可变 blob,不走 `supabase-snapshot/{table}.json` 硬编码。
     写回用 Neon HTTP /sql INSERT ... ON CONFLICT (pk) DO UPDATE SET。
     jsonb 列回写需 $N::jsonb 强转(row_to_json 序列化为字符串)。
     task_logs(bigserial 代理键)不写回(保持 _SAFE_RESTORE 语义)。
     """
     out: dict[str, Any] = {"table": table, "rows": 0, "verify_ok": False, "restored": False}
-    key = f"supabase-snapshot/{table}.json"
+    # 从 manifest.objects 读该表 blob key;无 objects 段降级到 supabase-snapshot/ 兼容旧快照
+    obj_meta = (manifest.get("objects") or {}).get(table) if manifest else None
+    if obj_meta and obj_meta.get("key"):
+        key = obj_meta["key"]
+    else:
+        key = f"supabase-snapshot/{table}.json"
     try:
         raw = _get_snapshot_bytes(r2, key)
     except botocore.exceptions.ClientError as e:
