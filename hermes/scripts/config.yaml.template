@@ -1,7 +1,7 @@
 # Nexus Hermes Agent config 模板(K 形态,2026-08-02)
 # start.sh boot 首启从本模板生成 $HERMES_HOME/config.yaml(不覆盖既有)。
 # 全原生三组件:gateway(含 api_server adapter 同 loop)+ dashboard(in-proc daemon thread --port 7860)
-#               + 两 plugin tab(nexus-r2 R2 文件 / nexus-ops 下游+业务表)。
+#               + plugin tab(nexus-r2 R2 文件)。nexus-ops(下游探活+Supabase 业务表)2026-08-22 删。
 #
 # 关键闸门:
 #   - model 段(provider=custom,官方正路,2026-08-02 源码核改):
@@ -27,7 +27,6 @@
 plugins:
   enabled:
     - nexus-r2
-    - nexus-ops
 
 # ── model_catalog.excluded_providers:屏蔽全内置 canonical 商店(picker 只留 omn)──
 # 命中 model_switch.py:2453/2272/2167 三处削 section1-2 + models.dev + canonical

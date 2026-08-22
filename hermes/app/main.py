@@ -23,7 +23,7 @@ web_server.py X-Frame-Options + CSP,见 start.sh _patch_web_server_cors)。
 
 原 main.py 的 /run//enqueue//dequeue//state//task 自路由 + Gradio + R2 helper
 全迁:HTTP 任务入口 → api_server /v1/runs;Dashboard → 原生 SPA;R2 CRUD →
-nexus-r2 plugin;下游探活 + 业务表只读 → nexus-ops plugin。
+nexus-r2 plugin。nexus-ops(下游探活 + Supabase 业务表只读)2026-08-22 删。
 不再跑 uvicorn app.main:app(K 路无 FastAPI 自路由壳)。HF 7860 由 dashboard 直监听。
 """
 from __future__ import annotations

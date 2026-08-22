@@ -1,6 +1,0 @@
-name: nexus-ops
-version: 0.1.0
-description: "Nexus 下游 Space 调度 + 业务表只读查 tab(纯 dashboard，无 tool)。经 call_space 探活/调下游 claude-code/codex/langgraph Space，只读查 Supabase agent_states/task_logs/task_queue/long_memory 四表。kind: backend 免 opt-in(platform_toolsets 无 tool 注册故无侧)。"
-author: i3t2y
-kind: backend
-provides_tools: []

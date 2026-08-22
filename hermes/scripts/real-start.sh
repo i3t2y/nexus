@@ -50,12 +50,12 @@ mkdir -p "${HERMES_HOME}/home" 2>/dev/null || echo "[real-start] WARN: mkdir ${H
 #   HERMES_HOME 与 OS HOME(=/home/user)刻意分离(L859-861:HERMES_HOME scopes state,HOME 为 OS user)。
 # mkdir 此目录保子进程 HOME 落地有路径。
 
-# nexus 两 plugin 从 Bucket 逻辑层拷到 HERMES_HOME/plugins(K1 决策-3 两 plugin 目录)
-#   - nexusr2: 三下游 bridge tool(toolset=nexus)+ R2 文件 CRUD dashboard tab
-#   - nexusops: 纯 dashboard tab(下游探活 + Supabase 业务表只读),无 tool
+# nexus plugin 从 Bucket 逻辑层拷到 HERMES_HOME/plugins(K1 决策-3 插件目录)
+#   - nexus-r2: R2 文件 CRUD dashboard tab (+ 原三下游 bridge tool 已随收口取消)
+#   - nexus-ops: 2026-08-22 删。探活下游三 Space(已取消) + 只读查废弃 Supabase 四表 → 归 old/
 # hermes 用户插件目录 = $HERMES_HOME/plugins(hermes_cli/plugins.py 扫此 + web_server dashboard discovery 扫此)
 # ★2026-08-09 方案 C:plugin source 在 $APP_DIR/scripts/plugins/(Bucket 挂载后才有)。
-for pname in nexus-r2 nexus-ops; do
+for pname in nexus-r2; do
   if [ -d "$APP_DIR/scripts/plugins/$pname" ]; then
     rm -rf "$HERMES_HOME/plugins/$pname" 2>/dev/null
     cp -r "$APP_DIR/scripts/plugins/$pname" "$HERMES_HOME/plugins/" \
