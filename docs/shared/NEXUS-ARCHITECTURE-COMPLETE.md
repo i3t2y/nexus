@@ -62,7 +62,7 @@ Nexus 运行在 **HF Docker Space** 上，以下约束是架构设计的根本�
 Nexus = 3 个 HF Docker Space + 1 个 CF Worker + 3 个外部服务
 
 HF Space:
-  sonoke/h (Hermes)     — 入口/路由/调度/IM (三件套宿主, 唯一热大脑)
+  sonoke/h (Hermes)     — 入口/路由/调度/IM (Hermes 单体, 唯一热大脑)
   nmem/memlg (Memgraph) — 冷备 Hermes (同镜像/同 Bucket/同 Neon-R2, 暂停态)
   nonoke/omn (OmniRoute) — 模型路由 (339+ provider, 不是备脑)
 
@@ -516,17 +516,17 @@ HF Docker Space 是独立容器，彼此不共享进程空间。但 Nexus 需要
 └─────────────────────────────────────────────────┘
                       │
                       ▼
-              ┌─ sonoke/h  HERMES 热（三件套同进程）──┐
+              ┌─ sonoke/h  HERMES 热（Hermes 单体）──┐
               │  四层：墓碑镜像 + /data 逻辑 + Secrets   │
-              │  Hermes boot + LangGraph 库 + Mem0 库   │
+              │  Hermes boot + LLM 路由 + persist daemon  │
               │  persist daemons + SIGTERM flush         │
               └──────────────┬──────────────────────────┘
                  │           │            │
                  ▼           ▼            ▼
           Neon HTTP/sql   Neon 短TCP    R2 S3
-          task_queue      Mem0 pgvector home.tar.gz
-          可选四表         checkpoints   sessions.tar.gz
-                          (直连,用完关)  MANIFEST CAS
+          task_queue      pgvector      home.tar.gz
+          可选四表         (mem0 未部署)  sessions.tar.gz
+                          checkpoints   MANIFEST CAS
                  │
                  ▼
           nonoke/omn  OmniRoute（模型网关，不是大脑）
@@ -541,7 +541,7 @@ HF Docker Space 是独立容器，彼此不共享进程空间。但 Nexus 需要
 
 | Space | 职能 | 为什么独立 |
 |-------|------|-----------|
-| Hermes | 唯一大脑：入口/路由/IM/三件套宿主 | 必须常热，与用户交互 |
+| Hermes | 唯一大脑：入口/路由/IM/调度 | 必须常热，与用户交互 |
 | OmniRoute | 模型路由（339+ provider 聚合） | 独立账号，不属仓内，不是备脑 |
 | Memgraph | **冷备 Hermes**（暂停态，不运行时） | 祖父席位不可浪费，改灾备用 |
 
@@ -903,8 +903,8 @@ GitHub i3t2y/nexus (public, Actions 无限免费)
 
 ### 10.3 关键未决问题（待 Gork 裁决）
 
-1. **持久化方案选择**：现态 Neon 升付费 vs SQLite 中心化（全迁 Bucket）vs 混合（mem0 留 Neon，其余迁 SQLite）。2026-08-21 收口暂维持 Neon HTTP /sql + Mem0 短 TCP
-2. **mem0 向量搜索替代**：若迁 SQLite，pgvector 精度降级可接受否？
+1. **持久化方案选择**：现态 Neon 升付费 vs SQLite 中心化（全迁 Bucket）vs 混合。2026-08-21 收口暂维持 Neon HTTP /sql（mem0 未部署，待后续决策）
+2. **mem0 向量搜索引入**：若部署 mem0，需 pgvector 支撑；当前四表+task_queue 走 Neon HTTP /sql 已够
 3. ~~三 Space 重建~~ **已取消**(P4 无 Docker 四席)
 4. **Neon 升付费**：$19/mo Launch 层还是 $0 免费层硬扛？现态对话短 TCP 勉强够，若 CU 涨需升
 5. **sync-logic-bucket.sh 活化**：改完逻辑后手动跑 vs CI 自动跑？风险：CI 自动跑可能推旧代码
@@ -934,8 +934,8 @@ GitHub i3t2y/nexus (public, Actions 无限免费)
 
 **阶段 P0.5** — 单 Space 部署收尾（2026-08-22 完成）
 - ✅ 确认无 Neon 定时心跳（persist_to_neon.py 去 space_health + 改 --init）
-- ✅ Mem0 切 oss pgvector（pooler 短 TCP，默认行为）
-- ✅ embed 维数对齐（MEM0_VECTOR_DIM=768，禁用 2048）
+- ⏳ Mem0 部署到 sonoke/h（代码侧已落 mem0.json.template + base 镜像含 mem0ai，待注入 real-start.sh + HF Secrets）
+- ⏳ embed 维数对齐（待部署时依 embedder 模型定，NIM nemotron 2048 / bge-m3 1024）
 - ✅ 冷备 nmem/memlg 降级可选，单 Space 部署不依赖
 
 **阶段 P1** — NPC 派发 + 本机桥
