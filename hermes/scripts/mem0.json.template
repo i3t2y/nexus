@@ -1,0 +1,34 @@
+{
+  "mode": "oss",
+  "agent_id": "hermes",
+  "oss": {
+    "vector_store": {
+      "provider": "pgvector",
+      "config": {
+        "connection_string": "${MEM0_PG_URI}",
+        "collection_name": "hermes_mem0",
+        "hnsw": false,
+        "sslmode": "require",
+        "embedding_model_dims": 2048
+      }
+    },
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "glm-4.7-flash",
+        "openai_base_url": "https://api.z.ai/api/paas/v4",
+        "api_key": "${ZAI_API_KEY}",
+        "temperature": 0.1,
+        "max_tokens": 2000
+      }
+    },
+    "embedder": {
+      "provider": "openai",
+      "config": {
+        "model": "nvidia/nemotron-3-embed-1b",
+        "openai_base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "${NVIDIA_API_KEY}"
+      }
+    }
+  }
+}

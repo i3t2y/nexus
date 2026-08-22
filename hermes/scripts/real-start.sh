@@ -185,6 +185,44 @@ else
   echo "[real-start] home-files upload daemon skip (need HF_TOKEN+HF_OWNER+NEXUS_LOGIC_BUCKET)"
 fi
 
+# ── mem0 记忆层 (OSSBackend pgvector, ★2026-08-22 三件套部署) ──
+# 门控:MEM0_MODE=oss 才生成 mem0.json(HF Secrets 设此值即激活记忆层)。
+#   - Hermes agent → OSSBackend → pgvector(pooler 短 TCP 用完即关,与 HTTP /sql 主路分离)
+#   - embedder = NIM nvidia/nemotron-3-embed-1b(2048 维,2026-08-14 实证唯一账户可用 model;
+#     bge-m3 对此账户返 500,故不用;hnsw:false 因 2048 超 pgvector HNSW 2000 维上限)
+#   - llm = 智谱 glm-4.7-flash(${ZAI_API_KEY})提炼记忆
+# env 齐检:MEM0_PG_URI(Neon 连接串) + ZAI_API_KEY(智谱) + NVIDIA_API_KEY(NIM)。缺则 WARN 不 fail boot。
+# mem0.json 由模板 inline python envsubst(re.sub ${VAR} → os.environ)注入 $HERMES_HOME/mem0.json,
+#   "缺才生成"模式(已有保留;FORCE_TEMPLATE_APPLY=1 强制重生成)。
+# MEM0_TELEMETRY=false 禁 posthog 遥测(模块级读,须 export 进 hermes 子进程)。
+if [ "${MEM0_MODE:-}" = "oss" ]; then
+  export MEM0_TELEMETRY=false
+  if [ -f "$APP_DIR/scripts/mem0.json.template" ]; then
+    python3 - "$APP_DIR/scripts/mem0.json.template" "$HERMES_HOME/mem0.json" <<'PYEOF' 2>&1 | sed 's/^/[real-start] /'
+import json, os, re, sys
+tmpl_path, out_path = sys.argv[1], sys.argv[2]
+if os.path.exists(out_path) and os.getenv("FORCE_TEMPLATE_APPLY", "") != "1":
+    print(f"mem0.json retained (existing preserved; FORCE_TEMPLATE_APPLY=1 force)")
+    sys.exit(0)
+tmpl = open(tmpl_path).read()
+filled = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+                lambda m: os.environ.get(m.group(1), ""), tmpl)
+try:
+    json.loads(filled)  # JSON valid 校验
+except json.JSONDecodeError as e:
+    print(f"mem0.json ERROR: template envsubst produced invalid JSON ({e}); keys missing?")
+    sys.exit(1)
+with open(out_path, "w") as f:
+    f.write(filled)
+print(f"mem0.json generated ok=1 → {out_path}")
+PYEOF
+  else
+    echo "[real-start] WARN: mem0.json.template missing, mem0 config not generated"
+  fi
+else
+  echo "[real-start] mem0 skip (MEM0_MODE!=oss, no mem0.json generated)"
+fi
+
 # 后台:下游 Space 保活探测
 # 2026-08-22 单 Space 部署: 三下游已取消, omniroute 不依赖保活。
 # 默认关(KEEPALIVE_ENABLED=0); cron-job.org 单路 GET /health 15-25min 已够。

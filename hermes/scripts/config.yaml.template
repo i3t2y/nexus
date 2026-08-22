@@ -217,3 +217,13 @@ auxiliary:
   memory_flush:
     provider: main
     timeout: 90
+
+# ── mem0 记忆层激活(★2026-08-22 三件套) ──
+# agent_init.py:987 读 memory.provider → load_memory_provider("mem0") → is_available() 闸门
+#   → add_provider + initialize_all(:1036) → 工具注入(:1045,mem0_search/mem0_add)。
+# 配 MEM0_MODE=oss 后 Hermes boot 激活 mem0 插件工具;未设则 plugin init 失败被 try/except 吞 warning 不 crash boot。
+# 上游 repo 版插件(~/refs 0430)只认平台 api_key 不认识 mode:oss;base 镜像 fork 版(OSSBackend)才认。
+#   运行时以 base 镜像为准 — 故配 MEM0_MODE=oss 走 OSSBackend pgvector 自托管路。
+# mem0.json 具体 oss 配置(embedder/llm/vector_store)由 real-start.sh 注入 $HERMES_HOME/mem0.json。
+memory:
+  provider: mem0

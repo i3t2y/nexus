@@ -95,3 +95,14 @@ brotlicffi==1.2.0.1        # telegram sendPhoto/voice brotli 压缩解;文字 IM
 # hermes core dep;base 装 --no-deps 须手钉。platform marker 保 linux x86_64(HF amd64)
 # v8.18:0.6→0.7.1 加 android guard(platform_release 排除 android Termux);linux x86_64 非 android 仍满足
 nemo-relay>=0.7.1,<0.8; sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release
+
+# === mem0 记忆层 (OSSBackend pgvector 自托管, ★2026-08-22 三件套部署) ===
+# mem0 插件 bundle 在 hermes-agent 上游(/opt/hermes-agent/plugins/memory/mem0/),
+# 但 base --no-deps 装 hermes 时 extras 不装 → 底层 mem0ai 库缺 → `import mem0` 崩
+# ("plugins.memory.mem0: Mem0 backend failed to initialize (oss mode): No module named 'mem0'")。
+# 补 mem0ai 本体(不含 [nlp] spaCy extra:向量语义搜索仍工作,spaCy 仅 GIN 全文 fallback 降级)。
+# 依赖:pgvector 后端走 psycopg3(psycopg_pool.ConnectionPool,base 已装 L28-29,非 psycopg2)。
+# 传递 deps(httpx/openai/posthog/protobuf/qdrant-client/sqlalchemy)pip 自动拉;
+# posthog 遥测由 real-start.sh `export MEM0_TELEMETRY=false` 禁(模块级读,须进子进程 env)。
+# plugin.yaml 声明 mem0ai>=2.0.10,<3;2026-08-14 端到端实证 2.0.10(NIM nemotron embedder + pgvector 2048)可用,exact pin。
+mem0ai==2.0.10
