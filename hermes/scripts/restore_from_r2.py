@@ -123,8 +123,15 @@ def _get_manifest(r2) -> dict[str, Any] | None:
         raise
 
 
-def _get_snapshot_bytes(r2, key: str) -> bytes:
-    return r2.get_object(Bucket=_BUCKET, Key=key)["Body"].read()
+def _get_snapshot_bytes(r2, key: str) -> bytes | None:
+    """读取 R2 快照 blob。不存在返回 None（json.loads 调用方自行兜底）。"""
+    try:
+        return r2.get_object(Bucket=_BUCKET, Key=key)["Body"].read()
+    except botocore.exceptions.ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
+            return None
+        raise
 
 
 def _verify(table: str, raw: bytes, manifest: dict[str, Any] | None) -> tuple[bool, str]:
@@ -172,7 +179,14 @@ def _restore_table(r2, manifest, table: str, verify_only: bool) -> dict[str, Any
         code = e.response.get("Error", {}).get("Code", "")
         out["msg"] = f"读取快照失败 ({code}): {e}"
         return out
-    rows = json.loads(raw)
+    if raw is None:
+        out["msg"] = f"快照对象不存在(key={key})"
+        return out
+    try:
+        rows = json.loads(raw)
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        out["msg"] = f"快照 JSON 解析失败: {e}"
+        return out
     out["rows"] = len(rows)
     # 完整性校验(比对 R2 manifest 登记)
     ok, msg = _verify(table, raw, manifest)

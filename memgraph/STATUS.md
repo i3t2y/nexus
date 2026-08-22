@@ -41,22 +41,24 @@ GitHub i3t2y/nexus (版本化真源, public)
   → 扁平表 (task_id PK / task / user_id / status[pending|running|completed|failed]
   / kind / input jsonb / output jsonb / result / attempts / updated_at + touch trigger);
   新增 kind/input/output/attempts/updated_at 供 Stage B 本机桥 WHERE kind='npc';
-  Stage B (下周) 扫 pending+kind=npc → CNB CodeBuddy 云端 Agent (Issue @npc/CodeBuddy
-  或 OpenAPI /-/build/start api_trigger_npc, Gork 2026-08-18 裁决 workbuddy_npc 路废
-  WorkBuddy 桌面出口移除 → kind 枚举收 {generic|graph|npc|claude_code|pi}), 成败
-  回写 Neon output; Stage B 先 OpenAPI curl 无 Node 依赖 (MCP stdio 需装 Node 重
-  build base 付费墙, 走通再议升 MCP); act/delegate 本轮先 generic 兜底, kind='npc'
-  智能解析属 Stage B 触发; kind=graph 两路并存 (同步 plugin route_langgraph 短图 +
-  异步 task_queue + FOR UPDATE SKIP LOCKED poll 长图[Stage B 增强]); 消费模式保
-  "有消费者扫 pending" (旧 Upstash BLPOP 思想→Neon SkipLocked 表, Gork 裁定)
+  Stage B (2026-08-22 已落) 桥脚本 bridge/poll_worker_tasks.py 扫 pending+kind=npc
+  → CNB CodeBuddy OpenAPI (POST /{repo}/-/build/start event=api_trigger_npc,
+  Gork 2026-08-18 裁决 workbuddy_npc 路废 → kind 枚举收
+  {generic|graph|npc|claude_code|pi}), 成败回写 Neon output; 先 OpenAPI curl 路
+  无 Node 依赖 (MCP stdio 需装 Node 重 build base 付费墙, 走通再议升 MCP);
+  FOR UPDATE SKIP LOCKED 标准消费模式 (Gork 裁定③); act/delegate 仍写
+  kind='generic' 兜底, kind='npc' 写端待后续 Hermes plugin 或手动入;
+  kind=graph 两路并存 (同步 plugin route_langgraph 短图 + 异步 task_queue +
+  SKIP LOCKED poll 长图[Stage B 增强])。
 
-## 状态 (2026-08-18)
+## 状态 (2026-08-22)
 - ✅ memlg Space RUNNING, /health ok (不碰 Neon, let it scale-to-zero)
 - ✅ Neon memories 表有数据
 - ✅ Actions run #9 success (两 job 分开跑通)
 - ✅ Bucket nmem/logic 挂载 rw
 - ✅ 2026-08-17 Neon Free 保活反策略落地 (persist_to_neon httpx /sql 短请求 + /health 不碰 Neon, commit 3fbd846)
 - ✅ 2026-08-18 R2 副路恢复 (persist_to_r2.py 读源 Supabase→Neon, 与 Neon 主路双写)
+- ✅ Stage B 本机桥: bridge/poll_worker_tasks.py 已落 (FOR UPDATE SKIP LOCKED + CNB OpenAPI curl 路, 2026-08-22)
 - ⏳ Neon 七表 DDL 待执行 (neon-schema.sql)
 - ⏳ hermes Space 待加 POSTGRES_* Secrets (主路+R2 副路共用) + R2_* Secrets (副路灾备)
 - ⏳ hermes Space 待删旧 SUPABASE_* + MEM0_PG_URI Secrets
