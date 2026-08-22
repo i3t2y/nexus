@@ -232,8 +232,8 @@ def _write_task_to_neon(task: str, user_id: str = "default", kind: str = "generi
     Stage A (2026-08-18): 签名加 kind+input; 删自撜 DDL 改靠 neon-schema.sql 权威建表
     (治双 DDL 冲突根因); task 列仍写 goal 摘要兜底, 结构化字段进 input jsonb。
     Stage B (2026-08-22 已落): bridge/poll_worker_tasks.py 本机桥逆扫 WHERE
-    status='pending' AND kind='npc' → CNB CodeBuddy OpenAPI; 本函数仍传 kind='generic'
-    兜底, kind='npc' 写端待后续 Hermes plugin 或手动入 task 时指定 kind='npc'。
+    status='pending' AND kind='npc' → CNB CodeBuddy OpenAPI; act delegate 分支
+    已改传 kind='npc' (2026-08-22 续), 本机桥有实据可消费。
     """
     try:
         import psycopg
@@ -447,11 +447,11 @@ def act(state: WorkerState) -> WorkerState:
         logger.info(f"[act] write_file done, path={path}")
 
     elif action == "delegate":
-        # 委托: 写 Neon task_queue 表
+        # 委托: 写 Neon task_queue 表 → kind='npc' 供本机桥消费
         task_id = _write_task_to_neon(
             state["task"],
             state.get("user_id", "default"),
-            kind='generic',
+            kind='npc',
             input={"goal": state["task"]},
         )
         if task_id:
