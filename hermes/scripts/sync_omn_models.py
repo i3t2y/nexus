@@ -26,10 +26,16 @@
   - 失败/超时/JSON 解析错 → 保留现 config 不动(不破坏现有模型配置), 记日志退出
   - 不依赖第三方库(urllib 标准库 + ruamel 已有; 无 ruamel 则 yaml 兜底)
 
-过滤规则(白名单前缀, 可配置):
-  - OMNI_MODEL_PREFIXES 环境变量, 逗号分隔, 默认 "nvidia"
-  - 保留 id.startswith(prefix + "/") 的模型
-  - auto/* 永远丢弃(占位不可调用)
+过滤规则(白名单前缀 + 模型名关键词, 均可配置):
+  - OMNI_MODEL_PREFIXES 环境变量, 逗号分隔, 默认 "nvidia" — 保留 id.startswith(prefix + "/")
+  - OMNI_MODEL_KEYWORDS 环境变量, 逗号分隔, 默认 "deepseek,glm" — 保留 id 含该关键词
+    的模型(跨 provider 全覆盖, 如 deepseek-v4-flash/glm-5.2 散在 amd/oc/tllm/
+    sensenova/mistral/长UUID 各前缀)。2026-08-23 用户要求"所有 dpv4flash 和
+    glm5.2 都加进白名单", 关键词匹配比硬编码脆弱前缀(含长UUID)更稳。
+  - OMNI_MODEL_EXCLUDE_PREFIXES 环境变量, 逗号分隔, 默认 "tllm,oc,openai" —
+    命中关键词但仍排除的不可靠第三方前缀(theoldllm 黑户/opencode/自定义
+    openai-compatible-chat 长UUID), 用户 2026-08-23 明确"tllm、oc、openai 的去掉"。
+  - auto/* 永远丢弃(占位不可调用, 即使命中关键词如 auto/glm)
   - 无前缀裸 ID(nim-pool/nim-codex)丢弃(非独立模型)
 """
 
@@ -91,19 +97,29 @@ def fetch_omn_models(base_url: str, api_key: str, timeout: float = 10.0) -> list
     return [i for i in ids if isinstance(i, str) and i]
 
 
-def filter_models(ids: list, prefixes: list) -> list:
-    """滤掉 auto/* 占位 + 非白名单前缀, 返回需写入白名单的模型。
+def filter_models(ids: list, prefixes: list, keywords: list, excludes: list) -> list:
+    """滤掉 auto/* 占位 + 非白名单, 返回需写入白名单的模型。
 
     规则:
-      - auto/* 永远丢弃(combo 通配占位, 不可直接调用)
-      - 只保留 prefix + "/" 开头的模型(白名单前缀)
+      - auto/* 永远丢弃(combo 通配占位, 不可直接调用, 即使命中关键词)
+      - 保留命中白名单前缀(prefix + "/" 开头)的模型
+      - 或命中模型名关键词(大小写不敏感)的模型(跨 provider 全覆盖)
+      - 命中排除前缀(exclude + "/" 开头)的模型丢弃(不可靠第三方 provider)
       - 无前缀裸 ID 丢弃(非独立模型)
     """
     kept = []
+    kw_low = [k.lower() for k in keywords]
     for mid in ids:
         if mid.startswith("auto/"):
-            continue  # 占位通配, 永滤
-        hit = any(mid.startswith(p + "/") for p in prefixes)
+            continue  # 占位通配, 永滤(含 auto/glm 等)
+        # 排除按首段 provider 前缀(startswith 覆盖 openai-compatible-chat-... 长UUID)
+        # nvidia/openai/gpt-oss 首段=nvidia 不受影响(可靠平台保)
+        first = mid.split("/")[0]
+        if any(first.startswith(ex) for ex in excludes):
+            continue  # 排除前缀(不可靠第三方 provider)
+        mid_low = mid.lower()
+        hit = any(mid.startswith(p + "/") for p in prefixes) or \
+              any(k in mid_low for k in kw_low)
         if hit:
             kept.append(mid)
     return sorted(set(kept))
@@ -144,6 +160,8 @@ def main() -> int:
     api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     base_url = (os.environ.get("OMNI_BASE_URL") or "https://nonoke-omn.hf.space/v1").strip()
     prefixes = [p.strip() for p in os.environ.get("OMNI_MODEL_PREFIXES", "nvidia").split(",") if p.strip()]
+    keywords = [p.strip() for p in os.environ.get("OMNI_MODEL_KEYWORDS", "deepseek,glm").split(",") if p.strip()]
+    excludes = [p.strip() for p in os.environ.get("OMNI_MODEL_EXCLUDE_PREFIXES", "tllm,oc,openai").split(",") if p.strip()]
 
     if not api_key:
         log("skip: no OPENAI_API_KEY (omn 鉴权), keeping existing config")
@@ -163,8 +181,8 @@ def main() -> int:
         log("ERROR empty model list from omn (keeping existing config)")
         return 1
 
-    kept = filter_models(ids, prefixes)
-    log(f"fetched {len(ids)} models, kept {len(kept)} (prefix filter, auto/* dropped)")
+    kept = filter_models(ids, prefixes, keywords, excludes)
+    log(f"fetched {len(ids)} models, kept {len(kept)} (prefixes={prefixes} keywords={keywords} excludes={excludes}, auto/* dropped)")
 
     cfg = load_config()
     if cfg is None:

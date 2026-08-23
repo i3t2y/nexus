@@ -1,4 +1,4 @@
-# 三件套统一架构 (2026-08-22 勘误: Mem0 未部署至 sonoke/h)
+# 三件套统一架构 (2026-08-23 更新: Mem0 已部署至 sonoke/h)
 
 ## 三件套
 ```
@@ -7,7 +7,8 @@
 │  └→ persist_to_neon.py 主路 → Neon 四表             │
 │  └→ persist_to_r2.py 副路 → Neon 读 → R2 快照备份   │
 │  └→ act delegate 写 task_queue kind='npc' → 本机桥  │
-│  (Mem0 未部署, LangGraph 是 hermes 的 Python 库)     │
+│  (Mem0 已部署 = 进程内 OSSBackend → pgvector,      │
+│   LangGraph 是 hermes 的 Python 库)                 │
 ├─────────────────────────────────────────────────────┤
 │  memgraph (nmem/memlg) 冷备 (暂停态, 不运行)         │
 │  └→ 同 GHCR 镜像 + 同 Bucket 逻辑 + 同 Neon/R2 密钥  │
@@ -21,7 +22,7 @@
 │     kind: {generic|graph|npc|claude_code|pi}        │
 │     (workbuddy_npc 路废 Gork 2026-08-18)           │
 │     消费: FOR UPDATE SKIP LOCKED poll (本机桥)       │
-│  └→ (pgvector 扩展已装, 待 Mem0 部署时启用)          │
+│  └→ pgvector 已启用 (Mem0 hermes_mem0 表, 2026-08-23)│
 ├─────────────────────────────────────────────────────┤
 │  Cloudflare R2  灾备快照层 (副路)                    │
 │  └→ snapshots/<ts>/{四表}.json + MANIFEST.json      │
@@ -38,7 +39,7 @@
   → persist_to_r2.py 副路 (后台 1800s) → Neon 读 → R2 快照备份
   → act delegate → task_queue kind='npc' → 本机桥 poll → CNB CodeBuddy
 
-(Mem0 未部署, 无向量记忆层。当前真相源 = Neon 四表 + MEMORY.md + skills)
+(Mem0 已部署, 向量记忆层走 hermes_mem0。真相源 = Neon 四表 + hermes_mem0 + MEMORY.md + skills)
 ```
 
 ## 存储
@@ -53,7 +54,7 @@
 | state.db | 会话历史 | 本地盘+Bucket快照 | restore_state+state_uploader |
 | 代码版本 | 全部 | GitHub i3t2y/nexus (public) | git push |
 | Secrets | Postgres/R2/API keys | HF Space Secrets | 零文件持久化 |
-| (Mem0 未部署) | 向量记忆 | — | 待后续注入 real-start.sh + HF Secrets |
+| Mem0 | 向量记忆 | Neon pgvector | 进程内 OSSBackend (hermes_mem0 表, 2026-08-23) |
 
 ## Supabase → Neon 迁移 (2026-08-17) + R2 副路恢复 (2026-08-18)
 - **原**: mem0 oss mode 直连 Supabase pgvector + persist_to_r2.py 四表 Supabase→R2 双写
@@ -61,9 +62,12 @@
 - **2026-08-17 砍掉**: Supabase (7天暂停风险) + MEM0_PG_URI; R2 当时一并砍 (Neon 已持久化)
 - **2026-08-18 R2 副路恢复**: persist_to_r2.py 读源 Supabase→Neon (HTTP /sql), R2 作灾备快照层
   与 Neon 主路双写,manifest-only 不进 DB (sha256/bytes/rows 放 R2 MANIFEST.json)
-- **2026-08-22 勘误**: Mem0 代码侧已完成 (mem0.json.template + base 镜像含 mem0ai) 但生产未部署,
-  real-start.sh 无 mem0 注入段, sonoke/h 未配 Mem0 Secrets
-- **现役持久化**: Neon (主路持久) + R2 (副路灾备快照) 双层;Supabase 全退役
+- **2026-08-23 Mem0 部署**: real-start.sh 加 mem0 注入段 (门控 MEM0_MODE=oss), mem0.json 注入
+  (OSSBackend pgvector: nemotron-3-embed-1b 2048 维 + hnsw:false + 智谱 LLM), Neon hermes_mem0 表建成
+- **2026-08-23 P0 模型 EOL 修复**: 主模型 nvidia/z-ai/glm-5.2 EOL (410) → 换 nvidia/deepseek-ai/
+  deepseek-v4-flash-0731。sync_omn_models.py 三件套过滤 (前缀 nvidia + 关键词 deepseek/glm +
+  排除 tllm/oc/openai), 278 omn 模型滤到 117 白名单, 只增不删动态跟随 omn
+- **现役持久化**: Neon (主路持久 + hermes_mem0 向量) + R2 (副路灾备快照) 双层;Supabase 全退役
 - **DDL**: `memgraph/docs/neon-schema.sql` (七表幂等, 无 RLS, 不含 backup_snapshots)
 
 ## 部署链
