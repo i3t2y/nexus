@@ -105,6 +105,20 @@ fi
 #   SQLite 复一致稳定;持久化靠 persist_to_neon.py 核心四表主路 + persist_to_r2.py
 #   R2 快照副路(2026-08-18 恢复读源=Neon),不靠 state.db 快照)。
 
+# ── omn 模型白名单动态同步(★2026-08-23 三件套模型路由治理) ──
+# 解决"静态白名单跟不上 omn 动态模型"矛盾:拉 omn /v1/models → 滤 auto/* 占位
+#   → 只保留白名单前缀(默认 nvidia)真实模型 → 回写 providers.omn.models。
+# 保持 discover_models: false(picker 干净无僵尸),白名单由脚本自动跟随 omn 新增。
+# 门控:OPENAI_API_KEY(omn 鉴权)缺则跳过不阻断 boot;失败保留现 config 不动。
+# 须在 config.yaml 生成后跑(merge 白名单需 config 已存在),hermes boot 前跑完。
+# 脚本逻辑详见 sync_omn_models.py 头部设计动机。
+if [ -f "$APP_DIR/scripts/sync_omn_models.py" ] && [ -n "${OPENAI_API_KEY:-}" ] && [ -f "$HERMES_HOME/config.yaml" ]; then
+  echo "[real-start] sync omn models whitelist (dynamic, auto/* filtered)"
+  python "$APP_DIR/scripts/sync_omn_models.py" 2>&1 | sed 's/^/[real-start] /' || echo "[real-start] WARN: sync_omn_models.py failed (keeping existing config)"
+else
+  echo "[real-start] sync-omn-models skip (need OPENAI_API_KEY + config.yaml)"
+fi
+
 echo "[real-start] replay packages..."
 python "$APP_DIR/scripts/replay_packages.py" replay || echo "[real-start] replay skipped (no log yet)"
 

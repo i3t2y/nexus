@@ -99,19 +99,24 @@ providers:
     transport: chat_completions
     discover_models: false
     models:
-      nvidia/z-ai/glm-5.2:
+      nvidia/deepseek-ai/deepseek-v4-flash-0731:
         context_length: 128000
 
 # ── model 段:provider=custom:omn(替 bare custom)+ default=omn /v1/models raw id──
-# ★ default=nvidia/z-ai/glm-5.2:omn 真 raw id(非 hermes 自造前缀)。裸 glm-5.2 歧义 →
-#   omn 400 要求 provider 前缀(omn aggregator 多 provider 路由)。
+# ★ default=nvidia/deepseek-ai/deepseek-v4-flash-0731:omn 真 raw id(非 hermes 自造前缀)。
+#   裸 deepseek-v4-flash 歧义 → omn 要求完整 provider 前缀路由(omn aggregator 多
+#   provider 分层:nvidia 平台 / deepseek-ai 组织 / 模型)。2026-08-23 换此因旧
+#   glm-5.2 的 nvidia/z-ai/glm-5.2 在 omn /v1/models 已不存在(EOL 移除,omn 对未知
+#   模型返 410)。本模型 omn /v1/models 实证存在,ctx=128000,仍生命周期内。
 #   hermes chat.completions.create 路径不 strip(chat_completion_helpers.py:3100
 #   model_name=str(agent.model) 直传),整串透传 omn 不改路由。
 # ★ provider=custom:omn:not bare custom。runtime 解析 custom:<slug> 路由进 providers.omn
 #   (test_custom_provider_session_persistence _runtime_model_config 实证 custom:<slug>)。
 # ★ api_key 显式 ${OPENAI_API_KEY}(同 providers.omn,双重保险:runtime 优先 model 段 key)。
+# ★ providers.omn.models 白名单由 sync_omn_models.py 动态维护(拉 omn /v1/models 滤
+#   auto/* 占位 + 保留白名单前缀真实模型,2026-08-23):只增不删,omn 新增真实模型自动入列。
 model:
-  default: nvidia/z-ai/glm-5.2
+  default: nvidia/deepseek-ai/deepseek-v4-flash-0731
   provider: custom:omn
   base_url: https://nonoke-omn.hf.space/v1
   api_key: ${OPENAI_API_KEY}
