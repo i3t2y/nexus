@@ -247,6 +247,31 @@ if [ "$KEEPALIVE_ENABLED" = "1" ]; then
   KEEPALIVE_PID=$!
 fi
 
+# ── CNB CodeBuddy NPC 出网探活 + 容器内桥(★2026-08-23 验证 HF 能否独立调 NPC) ──
+# 背景: poll_worker_tasks.py 设计跑本机(绕 HF SNI 封禁), 但 HF 出网黑名单是 telegram/
+#   discord/workers.dev 等特定域, api.cnb.cool 不在其列 → 推测 HF 容器能直连 CNB, 无实证。
+# 本段容器内探活: boot 时 curl 测 api.cnb.cool 出网通不通, 打日志一锤定音。
+#   若通 → HF 侧可独立调 NPC(不必本机), 后续可在此启用容器内桥 poll_worker_tasks.py。
+#   若不通 → 维持本机桥设计(现状)。
+# 门控: CNB_ACCESS_TOKEN 存在才探活(无 token 无意义, 静默跳过)。
+if [ -n "${CNB_ACCESS_TOKEN:-}" ]; then
+  echo "[real-start] cnb probe: testing HF egress to api.cnb.cool (need CNB_ACCESS_TOKEN)..."
+  if timeout 12 curl -sS -o /dev/null -w "HTTP %{http_code} connect=%{time_connect}s total=%{time_total}s\n" https://api.cnb.cool/ 2>&1 | sed 's/^/[real-start] cnb probe: /'; then
+    echo "[real-start] cnb probe: OK — HF egress to api.cnb.cool WORKS, NPC can run in-container"
+    # 容器内桥: 探活 OK 后自动启动 poll_worker_tasks.py(缺 CNB_REPO 脚本内跳过不消费)。
+    #   2026-08-23 实证 HF 能直连 api.cnb.cool → 本机桥设计冗余, 改容器内独立调 NPC。
+    if [ -f "$APP_DIR/scripts/poll_worker_tasks.py" ]; then
+      echo "[real-start] cnb in-container bridge up (poll Neon task_queue kind=npc → CNB)"
+      nohup python "$APP_DIR/scripts/poll_worker_tasks.py" >"$LOG_DIR/cnb-bridge.log" 2>&1 &
+      CNB_BRIDGE_PID=$!
+    fi
+  else
+    echo "[real-start] cnb probe: FAIL — HF egress to api.cnb.cool blocked, keep host-side bridge"
+  fi
+else
+  echo "[real-start] cnb probe skip (no CNB_ACCESS_TOKEN, add HF Secret to probe/activate in-container NPC)"
+fi
+
 # ★2026-08-09 方案 C:删 dns-resolve.py dead code 段(原 start.sh L214-220 引用
 #   $APP_DIR/scripts/dns-resolve.py 但该文件仓库不存在 find 实证,原段永不进 if 分支无害。
 #   hermes telegram adapter 原生自带 DoH+fallback IP(tagram_network.py)是主路,无需此二线脚本。)
@@ -279,8 +304,8 @@ on_shutdown() {
     kill -TERM "$BOOT_PID" 2>/dev/null
     echo "[real-start] sent TERM to boot pid=$BOOT_PID"
   fi
-  # 三 persist daemon + keepalive:各脚本 _on_sigterm handler 触发最后一次 sync_once 后 exit
-  for pid in "${PERSIST_R2_PID:-}" "${STATE_PID:-}" "${HOME_PID:-}" "${KEEPALIVE_PID:-}"; do
+  # 三 persist daemon + keepalive + CNB bridge:各脚本 _on_sigterm handler 触发最后一次 sync 后 exit
+  for pid in "${PERSIST_R2_PID:-}" "${STATE_PID:-}" "${HOME_PID:-}" "${KEEPALIVE_PID:-}" "${CNB_BRIDGE_PID:-}"; do
     [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null && echo "[real-start] sent TERM to daemon pid=$pid"
   done
   # 等 flush(persist 各 _sleep_check 1s 粒度响应快;10s 兜底防慢网)
