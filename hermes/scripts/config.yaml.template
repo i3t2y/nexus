@@ -92,6 +92,22 @@ model_catalog:
 #   chat.completions.create() → {base_url}/chat/completions(omn 协议对齐)。
 # 前提:HF Secrets 须设 OPENAI_API_KEY=omn 真实密钥(401 修复前提)。
 providers:
+  # ★2026-08-29 直连主路:xnexus = 原始提供商第三方 OpenAI 兼容端点(绕过 nonoke 的 omn,
+  #   nonoke 账户 2026-08-23 TOS 锁定、omn /v1/models 返 206 不可靠)。
+  #   自定义 HF Secret 名 `xnexus` = Bearer key。
+  #   保留 omn 块备选(下方):申诉成功后可切回 custom:omn。
+  xnexus:
+    api: https://xnexus-o.hf.space/v1
+    name: xnexus
+    api_key: ${XNEXUS_API_KEY}
+    transport: chat_completions
+    discover_models: false
+    models:
+      nvidia/deepseek-ai/deepseek-v4-flash-0731:
+        context_length: 128000
+  # ── omn 保留备选(2026-08-23 nonoke 锁,申诉成功后切回用)──
+  # 前提:HF Secrets 仍设 OPENAI_API_KEY=omn 真实密钥。切换=model 段 provider 改
+  #   custom:omn + default/base_url/api_key 改 omn 值,并重启。
   omn:
     api: https://nonoke-omn.hf.space/v1
     name: omn
@@ -102,28 +118,21 @@ providers:
       nvidia/deepseek-ai/deepseek-v4-flash-0731:
         context_length: 128000
 
-# ── model 段:provider=custom:omn(替 bare custom)+ default=omn /v1/models raw id──
-# ★ default=nvidia/deepseek-ai/deepseek-v4-flash-0731:omn 真 raw id(非 hermes 自造前缀)。
-#   裸 deepseek-v4-flash 歧义 → omn 要求完整 provider 前缀路由(omn aggregator 多
-#   provider 分层:nvidia 平台 / deepseek-ai 组织 / 模型)。2026-08-23 换此因旧
-#   glm-5.2 的 nvidia/z-ai/glm-5.2 在 omn /v1/models 已不存在(EOL 移除,omn 对未知
-#   模型返 410)。本模型 omn /v1/models 实证存在,ctx=128000,仍生命周期内。
-#   hermes chat.completions.create 路径不 strip(chat_completion_helpers.py:3100
-#   model_name=str(agent.model) 直传),整串透传 omn 不改路由。
-# ★ provider=custom:omn:not bare custom。runtime 解析 custom:<slug> 路由进 providers.omn
-#   (test_custom_provider_session_persistence _runtime_model_config 实证 custom:<slug>)。
-# ★ api_key 显式 ${OPENAI_API_KEY}(同 providers.omn,双重保险:runtime 优先 model 段 key)。
-# ★ providers.omn.models 白名单由 sync_omn_models.py 动态维护(拉 omn /v1/models 滤
-#   auto/* 占位 + 保留白名单前缀真实模型,2026-08-23):只增不删,omn 新增真实模型自动入列。
-#   过滤三件套(2026-08-23):前缀白名单(默认 nvidia) + 模型名关键词(默认 deepseek,glm,
-#   跨 provider 全覆盖所有 dpv4flash/glm5.2) + 排除前缀(默认 tllm,oc,openai,
-#   不可靠第三方)。三配置经 OMNI_MODEL_PREFIXES/OMNI_MODEL_KEYWORDS/OMNI_MODEL_EXCLUDE_PREFIXES
-#   env 可调。实测保留: nvidia 全部 112 + amd/mistral/sensenova 的 deepseek/glm 5 个 = 117。
+# ── model 段:provider=custom:xnexus(直连主路,绕过 nonoke 的 omn)──
+# ★ default=nvidia/deepseek-ai/deepseek-v4-flash-0731:沿用原 omn raw id。xnexus 端点是否
+#   认这个完整前缀 id 待验;若不认(401/404 模型未知)改端点上真 raw id。
+# ★ provider=custom:xnexus:runtime 解析 custom:<slug> 路由进 providers.xnexus。
+# ★ api_key 显式 ${XNEXUS_API_KEY}=HF Secret 自定义名 `xnexus`(real-start.sh 注入)。
+#   (2026-08-03 教训:runtime_provider host 门控 host 不命中 openai/azure 时 OPENAI_API_KEY
+#   候选被跳过 → 必须显式 api_key 段命中 L1268 cfg_api_key 路径才发真 key。)
+# ★ 切回 omn(申诉成功后):provider 改 custom:omn + default/base_url/api_key 改 omn 值 + 重启。
+#   同步注意:sync_omn_models.py 仍指向 omn /v1/models(206 截断会 fail,已 fallback 保留白名单);
+#   直连 xnexus 后该脚本无需再维护 xnexus 白名单(discover_models=false 静态列)。
 model:
   default: nvidia/deepseek-ai/deepseek-v4-flash-0731
-  provider: custom:omn
-  base_url: https://nonoke-omn.hf.space/v1
-  api_key: ${OPENAI_API_KEY}
+  provider: custom:xnexus
+  base_url: https://xnexus-o.hf.space/v1
+  api_key: ${XNEXUS_API_KEY}
 
 # top-level(非 nested):各平台启用的 toolset 列表。
 # hermes-* 是平台自带 toolset; nexus 是 nexus-r2 注册的下游 bridge toolset。
@@ -195,18 +204,18 @@ telegram:
 discord:
   enabled: false
 
-# ── auxiliary 副任务用主 provider(omn)+ 宽 timeout 容冷启动 ──
+# ── auxiliary 副任务用主 provider(xnexus)+ 宽 timeout 容冷启动 ──
 # 2026-08-07 修:title_generation 默认 fallback chain(openrouter→nous→custom→api-key)无
-#   omn 主 provider 明示 → openrouter/nous 无凭据死 + omn 走 step1 但 30s 默认 timeout 容不下
-#   omn(下游 nonoke/omn HF Space 免费 cpu 冷启)首请 → "Title generation failed: Request timed out"。
-#   §[start] state-db upload daemon up 同境 boot 阶 omn 首请慢。
+#   主 provider 明示 → openrouter/nous 无凭据死 + 主 provider 走 step1 但 30s 默认 timeout
+#   容不下(下游第三方端点冷启)首请 → "Title generation failed: Request timed out"。
 # 解:auxiliary 段显式指 provider=main(auxiliary_client.py:174 _normalize_aux_provider "main"
-#   resolve to user's actual main provider 含 named custom:omn)→ skip step2 fallback chain 直走 omn。
+#   resolve to user's actual main provider 含 named custom:xnexus)→ skip step2 fallback chain
+#   直走主 provider(2026-08-29 起为 xnexus;切回 omn 时自动跟随)。
 #   auxiliary.<task>.timeout(_get_task_timeout auxiliary_client.py:4360 黔 30.0s不容)→抬 90s 容冷启。
 #   影响任务:title_generation(dashboard 会话列表标题)/ compression(长对话压)/ summarize/
-#   vision/web_extract/memory_flush 同理 omn 慢 → 全配 main + 90s。
+#   vision/web_extract/memory_flush 同理慢 → 全配 main + 90s。
 # 不影响主聊天(主链 timeout 容忍更长,已实测聊天通)。此段只活 dashboard 副展示 + 长对话压缩体验。
-# 凭证:复用主 omn OPENAI_API_KEY(Secrets 已补);无新 env。
+# 凭证:复用主 provider key(XNEXUS_API_KEY,real-start.sh 已收敛);无新 env。
 auxiliary:
   title_generation:
     provider: main

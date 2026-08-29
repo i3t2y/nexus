@@ -19,6 +19,20 @@ APP_DIR="${HERMES_APP_DIR:-/data}"
 LOG_DIR="${HERMES_LOG_DIR:-/opt/data/logs}"
 HERMES_HOME="${HERMES_HOME:-/opt/data/.hermes}"
 
+# ── xnexus 直连 key 收敛(★2026-08-29 绕过 nonoke omn) ──
+# 用户后台自定义 HF Secret 名不统一(xnexus / XNEXUS / XNEXUS_API_KEY 任一),
+# 统一收敛成标准名 XNEXUS_API_KEY 供 config.yaml ${XNEXUS_API_KEY} 展开。
+# 需在 config cp 前 + hermes boot 前完成(进程 env 解析)。set -u 下用 ${X:-} 判空防 unbound。
+if [ -n "${XNEXUS_API_KEY:-}" ]; then
+  : # 已设标准名,直接可用
+elif [ -n "${xnexus:-}" ]; then
+  export XNEXUS_API_KEY="$xnexus"; echo "[real-start] xnexus key: mapped from Secret 'xnexus'"
+elif [ -n "${XNEXUS:-}" ]; then
+  export XNEXUS_API_KEY="$XNEXUS"; echo "[real-start] xnexus key: mapped from Secret 'XNEXUS'"
+else
+  echo "[real-start] xnexus key: none of xnexus/XNEXUS/XNEXUS_API_KEY set (main model will lack auth)"
+fi
+
 # bootstrap_from_bucket 由 thin source 前定义;独立调用补定义(boot while 循环 rebootstrap 用)
 if ! command -v bootstrap_from_bucket >/dev/null 2>&1; then
   bootstrap_from_bucket() {
