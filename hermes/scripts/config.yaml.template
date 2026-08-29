@@ -92,42 +92,25 @@ model_catalog:
 #   chat.completions.create() → {base_url}/chat/completions(omn 协议对齐)。
 # 前提:HF Secrets 须设 OPENAI_API_KEY=omn 真实密钥(401 修复前提)。
 providers:
-  # ★2026-08-29 直连主路:xnexus = 原始提供商第三方 OpenAI 兼容端点(绕过 nonoke 的 omn,
-  #   nonoke 账户 2026-08-23 TOS 锁定、omn /v1/models 返 206 不可靠)。
-  #   自定义 HF Secret 名 `xnexus` = Bearer key。
-  #   保留 omn 块备选(下方):申诉成功后可切回 custom:omn。
+  # ★2026-08-29 直连主路:xnexus = NVIDIA NIM 第三方 OpenAI 兼容端点(绕过 nonoke 的 omn,
+  #   nonoke 账户 2026-08-23 TOS 锁定、omn 弃用已删)。
+  #   自定义 HF Secret `XNEXUS_API_KEY` = Bearer key(real-start.sh 收敛段已归一)。
+  #   discover_models: true = 拉 xnexus /v1/models 动态列全部模型到 picker(不再静态白名单 1 个)。
+  #   若 /v1/models 返 206 截断/不可靠(omn 旧症),改回 false + 显式 models 静态列。
   xnexus:
     api: https://xnexus-o.hf.space/v1
     name: xnexus
     api_key: ${XNEXUS_API_KEY}
     transport: chat_completions
-    discover_models: false
-    models:
-      nvidia/deepseek-ai/deepseek-v4-flash-0731:
-        context_length: 128000
-  # ── omn 保留备选(2026-08-23 nonoke 锁,申诉成功后切回用)──
-  # 前提:HF Secrets 仍设 OPENAI_API_KEY=omn 真实密钥。切换=model 段 provider 改
-  #   custom:omn + default/base_url/api_key 改 omn 值,并重启。
-  omn:
-    api: https://nonoke-omn.hf.space/v1
-    name: omn
-    api_key: ${OPENAI_API_KEY}
-    transport: chat_completions
-    discover_models: false
-    models:
-      nvidia/deepseek-ai/deepseek-v4-flash-0731:
-        context_length: 128000
+    discover_models: true
 
-# ── model 段:provider=custom:xnexus(直连主路,绕过 nonoke 的 omn)──
-# ★ default=nvidia/deepseek-ai/deepseek-v4-flash-0731:沿用原 omn raw id。xnexus 端点是否
-#   认这个完整前缀 id 待验;若不认(401/404 模型未知)改端点上真 raw id。
+# ── model 段:provider=custom:xnexus(直连 NVIDIA NIM,omn 已删)──
+# ★ default=nvidia/deepseek-ai/deepseek-v4-flash-0731:NVIDIA NIM 默认 id(用户确认)。
+#   discover_models=true 时 picker 显示 /v1/models 全部;default 仍锚定本模型。
 # ★ provider=custom:xnexus:runtime 解析 custom:<slug> 路由进 providers.xnexus。
-# ★ api_key 显式 ${XNEXUS_API_KEY}=HF Secret 自定义名 `xnexus`(real-start.sh 注入)。
-#   (2026-08-03 教训:runtime_provider host 门控 host 不命中 openai/azure 时 OPENAI_API_KEY
-#   候选被跳过 → 必须显式 api_key 段命中 L1268 cfg_api_key 路径才发真 key。)
-# ★ 切回 omn(申诉成功后):provider 改 custom:omn + default/base_url/api_key 改 omn 值 + 重启。
-#   同步注意:sync_omn_models.py 仍指向 omn /v1/models(206 截断会 fail,已 fallback 保留白名单);
-#   直连 xnexus 后该脚本无需再维护 xnexus 白名单(discover_models=false 静态列)。
+# ★ api_key 显式 ${XNEXUS_API_KEY}(2026-08-03 教训:runtime_provider host 门控 host 不命中
+#   openai/azure 时 OPENAI_API_KEY 候选被跳过 → 必须显式 api_key 段命中 L1268 cfg_api_key
+#   路径才发真 key)。real-start.sh 收敛段把 XNEXUS_API_KEY 归一进进程 env。
 model:
   default: nvidia/deepseek-ai/deepseek-v4-flash-0731
   provider: custom:xnexus

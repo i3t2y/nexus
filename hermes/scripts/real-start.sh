@@ -119,18 +119,18 @@ fi
 #   SQLite 复一致稳定;持久化靠 persist_to_neon.py 核心四表主路 + persist_to_r2.py
 #   R2 快照副路(2026-08-18 恢复读源=Neon),不靠 state.db 快照)。
 
-# ── omn 模型白名单动态同步(★2026-08-23 三件套模型路由治理) ──
-# 解决"静态白名单跟不上 omn 动态模型"矛盾:拉 omn /v1/models → 滤 auto/* 占位
-#   → 只保留白名单前缀(默认 nvidia)真实模型 → 回写 providers.omn.models。
-# 保持 discover_models: false(picker 干净无僵尸),白名单由脚本自动跟随 omn 新增。
-# 门控:OPENAI_API_KEY(omn 鉴权)缺则跳过不阻断 boot;失败保留现 config 不动。
-# 须在 config.yaml 生成后跑(merge 白名单需 config 已存在),hermes boot 前跑完。
-# 脚本逻辑详见 sync_omn_models.py 头部设计动机。
-if [ -f "$APP_DIR/scripts/sync_omn_models.py" ] && [ -n "${OPENAI_API_KEY:-}" ] && [ -f "$HERMES_HOME/config.yaml" ]; then
-  echo "[real-start] sync omn models whitelist (dynamic, auto/* filtered)"
-  python "$APP_DIR/scripts/sync_omn_models.py" 2>&1 | sed 's/^/[real-start] /' || echo "[real-start] WARN: sync_omn_models.py failed (keeping existing config)"
-else
-  echo "[real-start] sync-omn-models skip (need OPENAI_API_KEY + config.yaml)"
+# ── omn 模型白名单动态同步(★2026-08-29 停用:omn 已删,主路直连 xnexus) ──
+# 原 2026-08-23 三件套治理:拉 omn /v1/models 滤 auto/* 回写 providers.omn.models。
+# omn provider 块已从 config.yaml 删除(2026-08-29,nonoke 锁/omn 206 弃用)→ 本脚本
+#   写 providers.omn.models 无对象,且每 boot 拉 nonoke-omn 报 206/429 噪音。故整段停用。
+# 主路 xnexus 用 discover_models: true 动态拉 /v1/models,不需本白名单脚本。
+if false; then
+  if [ -f "$APP_DIR/scripts/sync_omn_models.py" ] && [ -n "${OPENAI_API_KEY:-}" ] && [ -f "$HERMES_HOME/config.yaml" ]; then
+    echo "[real-start] sync omn models whitelist (dynamic, auto/* filtered)"
+    python "$APP_DIR/scripts/sync_omn_models.py" 2>&1 | sed 's/^/[real-start] /' || echo "[real-start] WARN: sync_omn_models.py failed (keeping existing config)"
+  else
+    echo "[real-start] sync-omn-models skip (need OPENAI_API_KEY + config.yaml)"
+  fi
 fi
 
 echo "[real-start] replay packages..."
