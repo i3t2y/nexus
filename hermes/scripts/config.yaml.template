@@ -98,7 +98,7 @@ providers:
   #   discover_models: true = 拉 xnexus /v1/models 动态列全部模型到 picker(不再静态白名单 1 个)。
   #   若 /v1/models 返 206 截断/不可靠(omn 旧症),改回 false + 显式 models 静态列。
   xnexus:
-    api: https://h-o.cc.cd/v1
+    api: https://omn.360710.xyz/v1
     name: xnexus
     api_key: ${XNEXUS_API_KEY}
     transport: chat_completions
@@ -114,7 +114,7 @@ providers:
 model:
   default: nvidia/deepseek-ai/deepseek-v4-flash-0731
   provider: custom:xnexus
-  base_url: https://h-o.cc.cd/v1
+  base_url: https://omn.360710.xyz/v1
   api_key: ${XNEXUS_API_KEY}
 
 # top-level(非 nested):各平台启用的 toolset 列表。
