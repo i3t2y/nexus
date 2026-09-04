@@ -92,28 +92,78 @@ model_catalog:
 #   chat.completions.create() → {base_url}/chat/completions(omn 协议对齐)。
 # 前提:HF Secrets 须设 OPENAI_API_KEY=omn 真实密钥(401 修复前提)。
 providers:
-  # ★2026-08-29 直连主路:xnexus = NVIDIA NIM 第三方 OpenAI 兼容端点(绕过 nonoke 的 omn,
-  #   nonoke 账户 2026-08-23 TOS 锁定、omn 弃用已删)。
-  #   自定义 HF Secret `XNEXUS_API_KEY` = Bearer key(real-start.sh 收敛段已归一)。
-  #   discover_models: true = 拉 xnexus /v1/models 动态列全部模型到 picker(不再静态白名单 1 个)。
-  #   若 /v1/models 返 206 截断/不可靠(omn 旧症),改回 false + 显式 models 静态列。
-  xnexus:
+  # ★2026-09-04 重命名 xnexus→omn + 白名单化(用户要求):endpoint 不变,仍是
+  #   omn.360710.xyz/v1(omniroute 聚合器反代,xnexus-o.hf.space gate,101 个上游 provider)。
+  #   自定义 HF Secret `XNEXUS_API_KEY` = Bearer key(real-start.sh 收敛段已归一;变量名保留
+  #   XNEXUS_API_KEY 不因 slug 改名而动)。
+  #   discover_models: true(旧) = 活探 /v1/models 拉 1159 个全灌 picker(auto/tllm/oc/
+  #   no-think/aihorde 废墟全入 → 用户嫌废)。改 false + 显式 models 白名单(下)。
+  # ★ discover_models: false 后 should_probe 短路, picker 只显下面显式 models 列的。
+  #   models 块每层 id: {context_length}; 加模型一行 + Restart(缓存镜像,不 git push)。
+  # ★ api_key 仍显式 ${XNEXUS_API_KEY}(2026-08-03 教训:runtime_provider host 门控 host 不命中
+  #   openai/azure 时 OPENAI_API_KEY 候选被跳过 → 必须显式 api_key 段命中 L1268 cfg_api_key
+  #   路径才发真 key)。context_length 摘自 omn /v1/models 活探(2026-09-04 /tmp/omn_models.json)。
+  omn:
     api: https://omn.360710.xyz/v1
-    name: xnexus
+    name: omn
     api_key: ${XNEXUS_API_KEY}
     transport: chat_completions
-    discover_models: true
+    discover_models: false
+    models:
+      nvidia/deepseek-ai/deepseek-v4-flash-0731:
+        context_length: 200000
+      nvidia/deepseek-ai/deepseek-v4-pro-0813:
+        context_length: 200000
+      nvidia/moonshotai/kimi-k3:
+        context_length: 200000
+      nvidia/moonshotai/kimi-k2.6:
+        context_length: 128000
+      nvidia/qwen/qwen3.5-397b-a17b:
+        context_length: 128000
+      nvidia/qwen/qwen3.5-122b-a10b:
+        context_length: 128000
+      nvidia/mistralai/mistral-large-3-675b-instruct-2512:
+        context_length: 128000
+      nvidia/meta/llama-4-maverick-17b-128e-instruct:
+        context_length: 128000
+      nvidia/openai/gpt-oss-120b:
+        context_length: 400000
+      nvidia/openai/gpt-oss-20b:
+        context_length: 400000
+      nvidia/z-ai/glm-5.2:
+        context_length: 128000
+      nvidia/stepfun-ai/step-3.7-flash:
+        context_length: 128000
+      gemini/gemini-3.1-pro-preview:
+        context_length: 1048576
+      gemini/gemini-3.7-flash:
+        context_length: 1048576
+      gemini/gemini-2.5-pro:
+        context_length: 1048576
+      mistral/mistral-large-latest:
+        context_length: 128000
+      mistral/devstral-latest:
+        context_length: 128000
+      sensenova/deepseek-v4-flash-high:
+        context_length: 1000000
+      amd/DeepSeek-V4-Flash:
+        context_length: 1048576
+      amd/DeepSeek-V4-Flash-Vision-Exp:
+        context_length: 1048576
+      amd/Qwen3.8-Flash-Next:
+        context_length: 262144
+      amd/MiniCPM5-1B:
+        context_length: 131072
 
-# ── model 段:provider=custom:xnexus(直连 NVIDIA NIM,omn 已删)──
-# ★ default=nvidia/deepseek-ai/deepseek-v4-flash-0731:NVIDIA NIM 默认 id(用户确认)。
-#   discover_models=true 时 picker 显示 /v1/models 全部;default 仍锚定本模型。
-# ★ provider=custom:xnexus:runtime 解析 custom:<slug> 路由进 providers.xnexus。
-# ★ api_key 显式 ${XNEXUS_API_KEY}(2026-08-03 教训:runtime_provider host 门控 host 不命中
-#   openai/azure 时 OPENAI_API_KEY 候选被跳过 → 必须显式 api_key 段命中 L1268 cfg_api_key
-#   路径才发真 key)。real-start.sh 收敛段把 XNEXUS_API_KEY 归一进进程 env。
+# ── model 段:provider=custom:omn(白名单化,2026-09-04 用户拍板)──
+# ★ default 保持 nvidia/deepseek-ai/deepseek-v4-flash-0731(用户确认不换)。
+#   discover_models=false 后 picker 只显上面 models 白名单 18 个;default 锚定 flash。
+# ★ provider=custom:omn:runtime 解析 custom:<slug> 路由进 providers.omn。
+# ★ api_key 显式 ${XNEXUS_API_KEY}(2026-08-03 教训同 providers 段)。real-start.sh 收敛段
+#   把 XNEXUS_API_KEY 归一进进程 env。
 model:
   default: nvidia/deepseek-ai/deepseek-v4-flash-0731
-  provider: custom:xnexus
+  provider: custom:omn
   base_url: https://omn.360710.xyz/v1
   api_key: ${XNEXUS_API_KEY}
 
@@ -187,13 +237,16 @@ telegram:
 discord:
   enabled: false
 
-# ── auxiliary 副任务用主 provider(xnexus)+ 宽 timeout 容冷启动 ──
+# ── auxiliary 副任务用主 provider(omn)+ 宽 timeout 容冷启动 ──
 # 2026-08-07 修:title_generation 默认 fallback chain(openrouter→nous→custom→api-key)无
 #   主 provider 明示 → openrouter/nous 无凭据死 + 主 provider 走 step1 但 30s 默认 timeout
 #   容不下(下游第三方端点冷启)首请 → "Title generation failed: Request timed out"。
 # 解:auxiliary 段显式指 provider=main(auxiliary_client.py:174 _normalize_aux_provider "main"
-#   resolve to user's actual main provider 含 named custom:xnexus)→ skip step2 fallback chain
-#   直走主 provider(2026-08-29 起为 xnexus;切回 omn 时自动跟随)。
+#   resolve to user's actual main provider 含 named custom:omn)→ skip step2 fallback chain
+#   直走主 provider(2026-09-04 起为 custom:omn;provider:main 自动跟随 model 段)。
+# 2026-09-04 补:白名单再加入 amd 4 个免费端点(用户要求,AMD GPU Cloud):
+#   amd/DeepSeek-V4-Flash(LLM+Vision)、amd/DeepSeek-V4-Flash-Vision-Exp(VLM)、
+#   amd/Qwen3.8-Flash-Next(VLM 262k)、amd/MiniCPM5-1B(LLM 128k)。全集 22。
 #   auxiliary.<task>.timeout(_get_task_timeout auxiliary_client.py:4360 黔 30.0s不容)→抬 90s 容冷启。
 #   影响任务:title_generation(dashboard 会话列表标题)/ compression(长对话压)/ summarize/
 #   vision/web_extract/memory_flush 同理慢 → 全配 main + 90s。
