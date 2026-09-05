@@ -48,8 +48,8 @@
 ```bash
 # GHCR PAT(classic, write:packages) 先登录
 docker login ghcr.io -u i3t2y
-# 注意: 构建文件叫 nexus-base.Dockerfile(非 Dockerfile); -f 指定它, 上下文/工作目录用 old/docker/(内含 requirements-base.txt + patch_web_server.py)
-docker build -t ghcr.io/i3t2y/nexus-base:stable -f old/docker/nexus-base.Dockerfile old/docker/
+# 注意: 构建文件叫 nexus-base.Dockerfile(非 Dockerfile); -f 指定它, 上下文/工作目录用 other/docker/(内含 requirements-base.txt + patch_web_server.py)
+docker build -t ghcr.io/i3t2y/nexus-base:stable -f other/docker/nexus-base.Dockerfile other/docker/
 docker push ghcr.io/i3t2y/nexus-base:stable
 ```
 > 红线: GHCR push 必须你手动做。已在 `:stable` 外验证过 `v2026.8.31-test` build+runtime 全过, 冒 stable tag 只是改名+push 同一镜像层。
