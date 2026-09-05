@@ -472,7 +472,7 @@ jobs:
 - settings.json deny/ask: `.claude/settings.json:3-24`(16 deny + 2 ask)
 - §2 纪律: `CLAUDE.md:25-28`
 - 全 env 占位: `start.sh:79/93`(sed 脱敏)+ `init-nim-keys.sh:526/910/997`(env 名)
-- 口径缺口: secret-scan.py 三类未含 R2 access key (旧 sh 版有未接线),圣上若需可补
+- 口径缺口: secret-scan.py 三类未含 R2 access key (旧 sh 版有未接线),Zen若需可补
 
 ---
 
