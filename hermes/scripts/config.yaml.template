@@ -34,6 +34,11 @@ plugins:
 # CANONICAL_PROVIDERS 实证),防未来误加凭证让内置商店露脸。
 # auto/* 非内置 = omn /v1/models 活探产物,关 discover_models 即净(非 excluded 职责)。
 # openrouter 用户拍板同屏蔽。
+# ★ opencode-free = keyless overlay(providers.py:160,免密钥匿名可列),
+#   走 list_authenticated_providers 的 excluded 过滤(pid 匹配),2026-09-05 补加删免费行。
+#   "opencode" 兜底归一歧义(hermes_slug 可能归 "free")。纯 config 即可删。
+# ★ moa ≠ excluded 职责:gateway/payload 在 excluded 过滤后无条件 prepend 虚拟行,
+#   且无 moa 块也兜底产 default preset → excluded 删不掉,须源码 patch(见回滚备注)。
 # 要用某内置商店:删该 slug + 配对应 *_API_KEY env + Restart。
 model_catalog:
   excluded_providers:
@@ -71,6 +76,8 @@ model_catalog:
     - kilocode
     - opencode-zen
     - opencode-go
+    - opencode-free
+    - opencode
 
 # ── providers dict:omn 命名 provider(v12+ 正路)──
 # custom_providers 列表经 config_migrations.py _migrate_to_12 转 providers dict 并删列表,
