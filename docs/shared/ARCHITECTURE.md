@@ -10,15 +10,16 @@
 │  (Mem0 已部署 = 进程内 OSSBackend → pgvector,      │
 │   LangGraph 是 hermes 的 Python 库)                 │
 ├─────────────────────────────────────────────────────┤
-│  memgraph (nmem/memlg) 冷备 (暂停态, 不运行)         │
-│  └→ 同 GHCR 镜像 + 同 Bucket 逻辑 + 同 Neon/R2 密钥  │
-│  └→ LangGraph worker 代码在 bucket/ 中 (待活跃时用)  │
+│  memgraph (nmem/memlg) — 【已废弃 2026-09-05】             │
+│  └→ hermes+mem0 OSS 进程内模式已满足需求, 全量移入         │
+│     old/memgraph-20260905/ (含 deploy workflow, 摘出       │
+│     .github/workflows/, 不再触发部署)                       │
 ├─────────────────────────────────────────────────────┤
 │  Neon Postgres  数据持久化 (主路)                    │
 │  └→ agent_states / task_logs / long_memory /        │
 │    skills_index (hermes 结构化四表)                  │
 │  └→ task_queue (扁平表 + kind/input,                │
-│     Stage A 2026-08-18 详见 memgraph/STATUS.md)     │
+│     Stage A 2026-08-18 详见 old/memgraph-20260905/STATUS.md)     │
 │     kind: {generic|graph|npc|claude_code|pi}        │
 │     (workbuddy_npc 路废 Gork 2026-08-18)           │
 │     消费: FOR UPDATE SKIP LOCKED poll (本机桥)       │
@@ -68,22 +69,20 @@
   deepseek-v4-flash-0731。sync_omn_models.py 三件套过滤 (前缀 nvidia + 关键词 deepseek/glm +
   排除 tllm/oc/openai), 278 omn 模型滤到 117 白名单, 只增不删动态跟随 omn
 - **现役持久化**: Neon (主路持久 + hermes_mem0 向量) + R2 (副路灾备快照) 双层;Supabase 全退役
-- **DDL**: `memgraph/docs/neon-schema.sql` (七表幂等, 无 RLS, 不含 backup_snapshots)
+- **DDL**: `old/memgraph-20260905/docs/neon-schema.sql` (七表幂等, 无 RLS, 不含 backup_snapshots)
 
 ## 部署链
 ```
 GitHub i3t2y/nexus (public, Actions 无限免费)
-  → .github/workflows/deploy-memgraph.yml
-    → deploy-space:  memgraph/space/ → HF Space git (rebuild)
-    → deploy-bucket: memgraph/bucket/ → HF Bucket sync (不 rebuild)
   → hermes/ 代码逻辑层 (Bucket 挂载引用)
+  (2026-09-05 起 memgraph 部署链废弃: deploy-memgraph.yml 摘入 old/memgraph-20260905/)
 ```
 
 ## per-Space Token
 | Token | 用途 | Secret 名 |
 |---|---|---|
 | HF_H_TOKEN | hermes (sonoke) 推送 | secrets.HF_H_TOKEN |
-| HF_M_TOKEN | memgraph (nmem) 推送 | secrets.HF_M_TOKEN |
+| HF_M_TOKEN | ~~memgraph (nmem) 推送~~ (memgraph 已废弃 2026-09-05, token 留备) | secrets.HF_M_TOKEN |
 | HF_L_TOKEN | Bucket 操作 | secrets.HF_L_TOKEN |
 | HF_CC_TOKEN | Claude Code Space | secrets.HF_CC_TOKEN |
 | HF_C_TOKEN | Codex Space | secrets.HF_C_TOKEN |
@@ -94,15 +93,11 @@ nexus/
   hermes/
     space/       ← Dockerfile + README.md + start.sh
     app/ libs/ mcp/ scripts/ skills/
-  memgraph/
-    space/       ← Dockerfile + README.md + start.sh  → HF Space git
-    bucket/      ← entrypoint.sh + run.py + graph/    → HF Bucket sync
-    docs/  STATUS.md
+  mem0/        ← 向量记忆层文档 (hermes 进程内 OSS → Neon, 2026-09-05 新增)
   docs/
     hermes/   ← hermes 持久化/架构文档
-    memgraph/ ← memgraph 部署文档
-    shared/   ← 共享 (ARCHITECTURE/COMMUNICATION/CREDENTIALS)
+    memgraph/ ← mem0 历史运维文档 (已标 ARCHIVED)
+    shared/   ← 共享 (ARCHITECTURE/CREDENTIALS)
     archive/  ← 不用的旧文档
-  old/         ← 暂存不用的 (claude-code/codex/langgraph/honcho)
-  .github/workflows/deploy-memgraph.yml
+  old/         ← 暂存不用的 (claude-code/codex/langgraph/honcho/memgraph-20260905)
 ```

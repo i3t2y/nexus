@@ -2,8 +2,8 @@
 
 ## 定位
 - **HF Space**: `sonoke/h` (云上大脑, 入口/路由/调度)
-- **后端**: Neon Postgres (mem0 记忆 + 结构化四表, via memlg Space)
-- **mem0 模式**: self_hosted → MEM0_HOST=https://nmem-memlg.hf.space
+- **后端**: Neon Postgres (mem0 记忆 + 结构化四表, 直连)
+- **mem0 模式**: OSS 进程内 (mem0.json mode=oss → Neon pgvector hermes_mem0; 2026-09-05 更正: 与 memlg Space 无关)
 
 ## 文件结构 (2026-08-17 重构)
 - `space/` — 三文件 (Dockerfile + README.md + start.sh), 推 HF Space git repo
@@ -25,7 +25,7 @@ Bucket sonoke/logic (rw 挂载 /data)
   └── scripts/ + app/ + libs/ + plugins/  →  逻辑层真源
 
 Neon Postgres (持久化主路, 替代 Supabase+R2 旧链)
-  ├── memories 表 (mem0 记忆, 通过 memlg Space)
+  ├── hermes_mem0 表 (mem0 向量记忆, 进程内 OSS 直连 Neon)
   ├── agent_states / task_logs / long_memory / skills_index (persist_to_neon.py 主路 600s)
   └── task_queue / space_health (辅助)
 
@@ -45,7 +45,7 @@ Cloudflare R2 (灾备快照副路, 2026-08-18 恢复)
   与 Neon 主路双写, manifest-only 不进 DB; restore_from_r2.py 反向闭环改 Neon 写回
 
 ### 待执行 (用户手动)
-1. **Neon Console**: 执行 `memgraph/docs/neon-schema.sql` (建七表)
+1. **Neon Console**: 执行 `old/memgraph-20260905/docs/neon-schema.sql` (建七表)
 2. **hermes Space Secrets**: 加 POSTGRES_HOST/PORT/USER/PASSWORD/DB (Neon 连接信息, 主路+R2 副路共用)
 3. **hermes Space Secrets**: 加 R2_ENDPOINT/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET (副路灾备)
 4. **hermes Space Secrets**: 删 SUPABASE_URL/SERVICE_ROLE_KEY/ANON_KEY/DB_URI + MEM0_PG_URI
@@ -55,9 +55,10 @@ Cloudflare R2 (灾备快照副路, 2026-08-18 恢复)
 - Supabase hermes_mem0 表 (~54行) 不迁移, 留在 Supabase 不删, 以后需要再导
 - Supabase 结构化四表 (agent_states 等) 如有数据也留 Supabase
 
-## 关键发现
+## 关键发现 (历史 — 记录当时调查结论)
 - **mem0.json mode=oss 之前一直覆盖 MEM0_HOST** → hermes mem0 实际走 Supabase pgvector
   而非预期的 memlg Space → Neon。原因是 _load_config 的 update filter: `v is not None and v != ""`
   让 file 的 mode=oss 覆盖了 env 的 MEM0_MODE=platform, 路由 oss > host 优先。
 - **mem0.json 不在 home-backups _FILES 列表** → 重启清盘后丢 → 回退到默认配置。
-  但正因如此, 改成 self_hosted 后重启反而正确 (不会再被 oss 覆盖)。
+  现由 real-start.sh 启动时重建 mem0.json (见 mem0/README.md), 此问题已闭环。
+- **2026-09-05 终态**: mem0 定为进程内 OSS → Neon pgvector (self_hosted/memlg 方案废弃)。
