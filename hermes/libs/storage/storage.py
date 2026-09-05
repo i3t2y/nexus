@@ -8,7 +8,7 @@
 log_task / enqueue_task / claim_task / complete_task / load_task / remember / recall）。
 单 Space 收口后 Supabase 废弃，真相源 = Mem0 向量 + MEMORY.md + skills + task_queue；
 agent_states/task_logs/long_memory 四表在 Neon（persist_to_r2 快照层管），不再经 Supabase。
-遗留调用方：nexus-ops plugin（探活已取消下游 + 查废弃 Supabase）一并归 old/。
+遗留调用方：nexus-ops plugin（探活已取消下游 + 查废弃 Supabase）一并归 other/。
 """
 from __future__ import annotations
 

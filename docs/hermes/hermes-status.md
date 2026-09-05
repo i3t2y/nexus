@@ -45,7 +45,7 @@ Cloudflare R2 (灾备快照副路, 2026-08-18 恢复)
   与 Neon 主路双写, manifest-only 不进 DB; restore_from_r2.py 反向闭环改 Neon 写回
 
 ### 待执行 (用户手动)
-1. **Neon Console**: 执行 `old/memgraph-20260905/docs/neon-schema.sql` (建七表)
+1. **Neon Console**: 执行 `other/memgraph-20260905/docs/neon-schema.sql` (建七表)
 2. **hermes Space Secrets**: 加 POSTGRES_HOST/PORT/USER/PASSWORD/DB (Neon 连接信息, 主路+R2 副路共用)
 3. **hermes Space Secrets**: 加 R2_ENDPOINT/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET (副路灾备)
 4. **hermes Space Secrets**: 删 SUPABASE_URL/SERVICE_ROLE_KEY/ANON_KEY/DB_URI + MEM0_PG_URI

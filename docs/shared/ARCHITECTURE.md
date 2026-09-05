@@ -12,14 +12,14 @@
 ├─────────────────────────────────────────────────────┤
 │  memgraph (nmem/memlg) — 【已废弃 2026-09-05】             │
 │  └→ hermes+mem0 OSS 进程内模式已满足需求, 全量移入         │
-│     old/memgraph-20260905/ (含 deploy workflow, 摘出       │
+│     other/memgraph-20260905/ (含 deploy workflow, 摘出       │
 │     .github/workflows/, 不再触发部署)                       │
 ├─────────────────────────────────────────────────────┤
 │  Neon Postgres  数据持久化 (主路)                    │
 │  └→ agent_states / task_logs / long_memory /        │
 │    skills_index (hermes 结构化四表)                  │
 │  └→ task_queue (扁平表 + kind/input,                │
-│     Stage A 2026-08-18 详见 old/memgraph-20260905/STATUS.md)     │
+│     Stage A 2026-08-18 详见 other/memgraph-20260905/STATUS.md)     │
 │     kind: {generic|graph|npc|claude_code|pi}        │
 │     (workbuddy_npc 路废 Gork 2026-08-18)           │
 │     消费: FOR UPDATE SKIP LOCKED poll (本机桥)       │
@@ -69,13 +69,13 @@
   deepseek-v4-flash-0731。sync_omn_models.py 三件套过滤 (前缀 nvidia + 关键词 deepseek/glm +
   排除 tllm/oc/openai), 278 omn 模型滤到 117 白名单, 只增不删动态跟随 omn
 - **现役持久化**: Neon (主路持久 + hermes_mem0 向量) + R2 (副路灾备快照) 双层;Supabase 全退役
-- **DDL**: `old/memgraph-20260905/docs/neon-schema.sql` (七表幂等, 无 RLS, 不含 backup_snapshots)
+- **DDL**: `other/memgraph-20260905/docs/neon-schema.sql` (七表幂等, 无 RLS, 不含 backup_snapshots)
 
 ## 部署链
 ```
 GitHub i3t2y/nexus (public, Actions 无限免费)
   → hermes/ 代码逻辑层 (Bucket 挂载引用)
-  (2026-09-05 起 memgraph 部署链废弃: deploy-memgraph.yml 摘入 old/memgraph-20260905/)
+  (2026-09-05 起 memgraph 部署链废弃: deploy-memgraph.yml 摘入 other/memgraph-20260905/)
 ```
 
 ## per-Space Token
@@ -99,5 +99,5 @@ nexus/
     memgraph/ ← mem0 历史运维文档 (已标 ARCHIVED)
     shared/   ← 共享 (ARCHITECTURE/CREDENTIALS)
     archive/  ← 不用的旧文档
-  old/         ← 暂存不用的 (claude-code/codex/langgraph/honcho/memgraph-20260905)
+  other/         ← 暂存不用的 (claude-code/codex/langgraph/honcho/memgraph-20260905)
 ```

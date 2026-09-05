@@ -37,7 +37,7 @@
 
 ## Supabase (archived — 2026-08-17 全退役)
 
-> 已由 Neon 取代。旧 Secrets 可从 HF Settings 清除。留此节作回退凭证 (old/sql/ + old/spaces/hermes/)。
+> 已由 Neon 取代。旧 Secrets 可从 HF Settings 清除。留此节作回退凭证 (other/sql/ + other/spaces/hermes/)。
 
 | 环境变量 | 来源 | 用途 |
 |---------|------|------|

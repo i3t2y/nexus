@@ -7,7 +7,7 @@
 - **Neon Postgres** — 持久化主路：结构化四表 + mem0 向量
 - **Cloudflare R2** — 灾备快照副路（Neon→R2 周期快照）
 
-> 2026-09-05: memgraph 编排 Space 正式废弃（hermes+mem0 OSS 已满足需求），全量移入 old/memgraph-20260905/（含其 deploy workflow，已摘出 workflows/ 不再触发）。
+> 2026-09-05: memgraph 编排 Space 正式废弃（hermes+mem0 OSS 已满足需求），全量移入 other/memgraph-20260905/（含其 deploy workflow，已摘出 workflows/ 不再触发）。
 
 > 当前状态：**生产中**。凭证走 HF Space Secrets，仓库内零密钥。
 
@@ -25,8 +25,8 @@ nexus/
 │   ├── hermes/        #   hermes Space 状态与部署清单
 │   ├── memgraph/      #   mem0 历史运维文档 (已标 ARCHIVED)
 │   └── archive/       #   历史方案存档 (legacy/ = 2026-09-05 集中归档, 已废弃)
-├── workers/gateway/   # Cloudflare Worker 统一入口
-├── old/               # 早期架构物料 (不部署, 仅存史)
+├── scripts/gateway/   # Cloudflare Worker 统一入口
+├── other/               # 早期架构物料 (不部署, 仅存史)
 └── scripts/           # Bucket 同步等运维脚本
 ```
 
