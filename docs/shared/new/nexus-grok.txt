@@ -1,0 +1,945 @@
+**Nexus 永续云脑三件套 · 生产级完整方案（首席架构师终审版）**
+
+> **版本**: 2026-08-22 Production  
+> **原则**: 第一性原理（约束不可变 → 分层隔离 → 丢失窗口显式 → 确定性优先）  
+> **查证源**: HF 官方文档/论坛、Neon 官方、Cloudflare R2 官方、Postgres SKIP LOCKED 生产实践、容器 SIGTERM 最佳实践。  
+> **目标**: 在 HF Docker 三席 + Neon Free + R2 Free 约束下，实现**可重启、可恢复、可观测、可演进**的单热脑系统。
+
+---
+
+## 0. 第一性原理与不可变约束（终审）
+
+| 约束 | 影响 | 生产对策 |
+|------|------|----------|
+| HF 本地盘重启清零 | state/config/日志丢失 | 外部持久化（Neon 主路 + R2 副路 + Bucket 逻辑） |
+| Docker Space 创建/重建消耗配额 | 付费墙/席位锁 | **四层分离 + 三文件墓碑**，日常只 Restart |
+| HF 封 IM DNS | Telegram/Discord 不可达 | CF Worker 自定义域反代（已实证） |
+| Bucket FUSE | SQLite WAL 崩溃 | state.db **必须**落 `/opt/data` 本地盘 |
+| Neon Free 100 CU-h/月 + 0.5 GB | 长连接/心跳超限 | **仅 HTTP /sql 短请求** + 禁止定时心跳 |
+| R2 Free 10 GB + **1M Class A + 10M Class B** | 写操作限额 | 不可变 blob + MANIFEST 指针，周期可控 |
+
+**三大原则（不变）**  
+1. **确定性 > 灵活性**（镜像钉死 tag，环境层永不改）  
+2. **外部持久化 > 本地存储**（丢失窗口显式：Neon 10 min / R2 30 min / state 5 min）  
+3. **异步 > 同步**（task_queue + 短工具直调）
+
+**关键修正（查证）**  
+- R2 Class A 为 **1 million**（文档既往“1000万 Class A”错误，统一修正）。  
+- Neon Launch 为按量（约 $0.106/CU-h），非固定 $19。  
+- HF Docker 需付费计划；ZeroGPU 主要服务 Gradio。
+
+---
+
+## 1. 生产拓扑（收口版）
+
+```
+用户 → Telegram
+  → CF Worker (tele.nexush.cc.cd)          # DNS 绕过 + ALLOWED_TOKENS
+    → sonoke/h (Hermes 唯一热脑)
+         ├─ OmniRoute (nonoke/omn)         # /v1/chat/completions
+         ├─ Neon HTTP /sql + pgvector 短 TCP
+         ├─ R2 (snapshots/<ts>/ + MANIFEST)
+         └─ HF Bucket (逻辑层 /data + 可选 home 镜像)
+
+nmem/memlg = 可选冷备（暂停，抢不到 MANIFEST 不准写）
+langgraph/claude-code/codex = 永久取消（P4 无席）
+```
+
+**同时只开一台 Hermes**。OmniRoute 可常开。冷备降级为可选。
+
+---
+
+## 2. 永续四层分离（生产加固）
+
+| 层 | 改动频率 | 触发 rebuild？ | 生产规则 |
+|----|----------|----------------|----------|
+| 镜像层 (GHCR `:stable`) | 月级 | 否（覆盖 tag） | 本地 build 验过再推；依赖升级才 README 一字符触发唯一 rebuild |
+| 环境层 (Dockerfile + README + start.sh) | **永不** | 是 | 墓碑；仅 5 行 Dockerfile |
+| 逻辑层 (Bucket `/data`) | 日级 | 否 | `sync-logic-bucket.sh --no-delete` + Restart |
+| 配置层 (HF Secrets) | 按需 | 否 | 全 Secrets，不入 git |
+
+**首切顺序（不可颠倒）**  
+0. 本地 build + push `nexus-base:stable`  
+1. HF 建 Bucket + 挂 `/data`  
+2. Restart 验挂载  
+3. `sync-logic-bucket.sh`  
+4. **手动** git push（唯一 rebuild）  
+5. 验 import + /health
+
+**补丁级：start.sh 瘦引导（推荐最终形态）**
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# PID1 友好：后续 real-start 用 exec
+wait_for_bucket_mount() {
+  local i=0
+  until [ -d /data ] && touch /data/.rw_test 2>/dev/null; do
+    i=$((i+1))
+    [ $i -gt 60 ] && { echo "FATAL: /data not ready"; exit 1; }
+    sleep 2
+  done
+  rm -f /data/.rw_test
+}
+
+wait_for_bucket_mount
+# bootstrap（带重试 + 超时）
+for attempt in 1 2 3; do
+  if hf buckets sync "hf://buckets/${HF_OWNER}/${NEXUS_LOGIC_BUCKET:-logic}" /data/ --no-delete; then
+    break
+  fi
+  [ $attempt -eq 3 ] && exit 1
+  sleep 5
+done
+
+# 关键：exec 让 real-start 成为真正子进程链，便于 SIGTERM 传递
+exec bash /data/scripts/real-start.sh
+```
+
+**real-start.sh 关键加固点（逐行审查清单）**  
+- 使用 `trap` 捕获 SIGTERM/SIGINT，**先** `kill -TERM` 主进程与 daemons，再 `persist --once`，再 `sleep 8-12`，再 exit 0。  
+- 主进程必须用 `exec python -m app.main:boot`（或 tini 包装），避免 shell 吞信号。  
+- restore 顺序：R2 MANIFEST → staging → atomic mv（禁止直接覆盖运行中 state.db）。  
+- `rm -f .env auth.json *.pid` 后由 Secrets 合成 .env（防泄漏残留）。  
+- CAS/租约：单机场景可简化为“写前检查 MANIFEST gen”，冷备必须抢租约失败则 standby。  
+- daemons 全部 `nohup ... &` 并记录 PID，shutdown 时统一 TERM。
+
+---
+
+## 3. 持久化三层（生产规格）
+
+### 3.1 主路 Neon（HTTP /sql only）
+
+- 禁止 psycopg2 长连接与任何定时心跳。  
+- 四表 + task_queue；mem0 用 pooler 短 TCP，仅 session_end / 图收尾 `add`。  
+- 嵌入维数：768 或 1536（禁用 2048）。  
+- 存储上限 0.5 GB：定期归档 task_logs（LIMIT + 删除旧行）。
+
+**补丁：persist_to_neon.py**  
+- 模式改为 `--init` + dirty flag + 10 min + TERM 一次打包。  
+- 合并写入，减少 CU。  
+- 错误重试：指数退避，失败只记日志不阻塞主进程。
+
+### 3.2 副路 R2（不可变 snapshots + MANIFEST）
+
+**官方免费额（已修正）**: 10 GB + 1M Class A + 10M Class B。
+
+**推荐结构**:
+```
+snapshots/2026-08-22T10:00:00Z/
+  agent_states.json
+  task_logs.json          # LIMIT 10000
+  long_memory.json
+  skills_index.json
+MANIFEST.json             # gen / ts / objects.*.{key,sha256,bytes,rows}
+```
+
+**生产实践（神仙做法）**  
+- 写：先 PUT 各 JSON → 最后 PUT MANIFEST（指针原子切换）。  
+- 读：读 MANIFEST → 按 key 下载 → 复算 sha256。  
+- 安全：空快照跳过；sha256 不符跳过；task_logs（bigserial）**不写回**。  
+- 生命周期：R2 Lifecycle 规则删除 >30 天的 `snapshots/`（保留最近 N 份）。  
+- 周期默认 1800s，可配置 300–600s（Class A 仍远低于 1M）。
+
+**补丁级：restore_from_r2.py 接口**
+```bash
+python restore_from_r2.py --list
+python restore_from_r2.py --table agent_states --verify-only
+python restore_from_r2.py --table agent_states
+python restore_from_r2.py --all
+```
+幂等 upsert；失败不部分写。
+
+### 3.3 配置层（R2 两 tar 优先，Bucket 可选镜像）
+
+- `home.tar.gz`（strip `.env` / `auth.json` / `*.pid` / logs / cache）  
+- `sessions.tar.gz`（`sqlite3 .backup` API，禁止直接 cp WAL）  
+- 周期 300–600s；SIGTERM 强制最后一次。
+
+---
+
+## 4. task_queue 消费模型（生产级 SKIP LOCKED）
+
+**神仙做法（已验证）**：Postgres 表队列 + `FOR UPDATE SKIP LOCKED` 是数百～数千 jobs/s 的默认正确选择，无需额外 broker。
+
+**推荐 schema（补全 claim 字段）**:
+```sql
+CREATE TABLE IF NOT EXISTS task_queue (
+  task_id      text PRIMARY KEY,
+  task         text,
+  user_id      text,
+  status       text NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','claimed','running','completed','failed','dead')),
+  kind         text NOT NULL DEFAULT 'generic'
+               CHECK (kind IN ('generic','graph','npc','pi','dsh')),
+  input        jsonb NOT NULL DEFAULT '{}',
+  output       jsonb,
+  result       text,
+  attempts     int  NOT NULL DEFAULT 0,
+  locked_at    timestamptz,
+  locked_by    text,
+  run_after    timestamptz DEFAULT now(),
+  created_at   timestamptz DEFAULT now(),
+  updated_at   timestamptz DEFAULT now(),
+  completed_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_queue_claimable
+  ON task_queue (run_after, created_at)
+  WHERE status = 'pending';
+```
+
+**原子 claim（推荐 CTE）**:
+```sql
+WITH next AS (
+  SELECT task_id
+  FROM task_queue
+  WHERE status = 'pending'
+    AND run_after <= now()
+    AND attempts < 5
+  ORDER BY created_at
+  FOR UPDATE SKIP LOCKED
+  LIMIT 1
+)
+UPDATE task_queue t
+SET status = 'claimed',
+    locked_at = now(),
+    locked_by = $worker_id,
+    attempts = attempts + 1,
+    updated_at = now()
+FROM next
+WHERE t.task_id = next.task_id
+RETURNING t.*;
+```
+
+**生产补丁清单**  
+1. 增加 `locked_at` / `locked_by` / `run_after`。  
+2. 后台回收：`status='running' AND locked_at < now() - interval '15 minutes'` → 回 `pending` 或 `dead`。  
+3. 完成/失败后尽快 archive 或 delete，防索引膨胀。  
+4. 写端与 claim 同库事务，保证一致性。  
+5. 单机 Hermes 下可先 LIMIT 1；多 worker 时再扩 batch。
+
+---
+
+## 5. 安全模型与凭证（红线）
+
+- 全部密钥走 HF Secrets。  
+- `NEXUS_AUTH_MODE` 空 = fail-closed。  
+- 鉴权分层：入站 `Authorization: Bearer NEXUS_API_KEY`；下游 `X-Nexus-Key`。  
+- CF Worker `isAllowedPath` 精确白名单 + 防路径穿越。  
+- **立即 revoke 已泄漏的旧 WORKER_API_KEY** 并轮转。  
+- HF_TOKEN 最小权限 + 定期轮换。
+
+---
+
+## 6. CI/CD 与重建闸门
+
+| 操作 | rebuild？ | 闸门 |
+|------|-----------|------|
+| GHCR push `:stable` | 否 | 本地 build 验过 |
+| git push HF 三文件 | **是** | **必须用户显式同意** |
+| sync-logic-bucket | 否 | py_compile + 路径检查 |
+| Secrets 变更 | 否 | — |
+
+红线：任何自动 git push 禁用；`--no-delete` 默认。
+
+---
+
+## 7. 观测与丢失窗口显式化
+
+在 `/health` 或 dashboard 暴露：  
+- 最后 Neon persist 时间  
+- 最后 R2 MANIFEST gen/ts  
+- 最后 state.db backup 时间  
+- daemon 存活  
+- Neon 近似 CU 估算（可选）
+
+---
+
+## 8. 已知问题与演进（生产优先级）
+
+**P0（本周）**  
+1. 修正所有 R2 Class A 文档数字为 1M。  
+2. SIGTERM 在 HF 真实路径验通（boot log 确认 flush）。  
+3. Mem0 注入 + 维数对齐 + CU 实测。  
+4. 泄漏 key 轮转。  
+5. task_queue 补 claim 字段 + 回收任务。
+
+**P1**  
+- R2 周期可配置 300–600s。  
+- memories 低频 JSON → R2。  
+- `poll_worker_tasks.py` 增强（kind=npc → CNB）。  
+- Neon 接近 100 CU-h 时降频或只读降级。
+
+**P2**  
+- 持久化选型决策（Free 硬扛 vs Launch 按量）。  
+- Bucket bootstrap 失败时 R2 逻辑包 fallback。  
+- MCP/Node 若需则单独重 build base。
+
+---
+
+## 9. 逐组件补丁级修改清单（摘要）
+
+| 组件 | 必须改 | 建议改 |
+|------|--------|--------|
+| **start.sh** | `exec` real-start；挂载重试；超时退出 | 健康检查写 `/tmp/ready` |
+| **real-start.sh** | SIGTERM trap 完整 flush；R2 restore 原子 mv；合成 .env | PID 文件管理；daemon 重启策略 |
+| **persist_to_r2.py** | MANIFEST 最后写；sha256；空跳过 | Lifecycle 规则；可配置周期 |
+| **restore_from_r2.py** | verify-only；task_logs 不写回；幂等 | 兼容旧路径回退 |
+| **task_queue** | claimed/locked_at/run_after；SKIP LOCKED CTE；回收 | 部分索引；归档作业 |
+| **persist_to_neon.py** | --init + dirty + TERM；无心跳 | 批量 upsert |
+| **state_db_uploader** | sqlite3 `.backup` API | strip 密钥文件 |
+| **CF Worker** | 路径白名单；仅 omn + 可选探测 | 速率限制 |
+| **文档** | R2 1M Class A；Neon 按量说明；丢失窗口表 | /health 字段说明 |
+
+---
+
+## 10. 验收标准（生产上线门槛）
+
+1. 重启后对话记忆、配置、task 状态可恢复（丢失窗口内可接受）。  
+2. SIGTERM 后 log 出现完整 persist 记录。  
+3. Neon CU 月消耗 < 30（留余量）。  
+4. R2 Class A 日消耗 < 1 万。  
+5. 语法闸门 + sync-check 全绿。  
+6. 无密钥入 git；旧泄漏 key 已失效。  
+7. 单热脑运行 48h 无异常重启循环。
+
+---
+
+**结论**  
+当前架构第一性原理正确，四层分离 + 三层持久化 + CF 反代是 HF 约束下的优秀解。按本方案修正 R2 数字、补全 task_queue claim、加固 SIGTERM 与 restore 原子性后，即可达到生产级。所有日常变更走逻辑层 sync + Restart，付费墙窗口被严格控制在“依赖升级”一次。
+
+如需我输出某一文件的完整补丁 diff（例如 `real-start.sh` 全文或 `task_queue` 迁移 SQL），直接指定文件名即可。
+
+
+
+
+以下为**生产级完整交付包**：覆盖所有关键文件的完整代码/迁移、Neon HTTP 短连接实现细节、R2 生命周期配置方法，以及 `real-start.sh` 的完整补丁级实现。
+
+---
+
+# 一、Neon HTTP 短连接：实现细节（第一性原理）
+
+## 1.1 为什么必须用 HTTP /sql
+
+| 方式 | CU 行为 | 适用 |
+|------|---------|------|
+| psycopg2 / 长 TCP | 连接存活期间 compute 保持唤醒，易烧满 100 CU-h | **禁止** |
+| pooler 短 TCP（用完即关） | 可接受，但需严格关连接 | mem0 向量查询 |
+| **HTTP POST `/sql`** | 请求结束即断，利于 scale-to-zero | **四表 + task_queue 主路** |
+
+Neon 代理暴露：
+
+```http
+POST https://{endpoint}.neon.tech/sql
+Header: Neon-Connection-String: postgresql://user:pass@host/db?sslmode=require
+Content-Type: application/json
+
+{"query": "SELECT $1::text AS x", "params": ["hello"]}
+```
+
+响应示例：
+
+```json
+{
+  "command": "SELECT",
+  "fields": [{"name": "x", "dataTypeID": 25}],
+  "rowCount": 1,
+  "rows": [{"x": "hello"}]
+}
+```
+
+要点：
+- 无会话状态、无交互式事务（多语句可用非交互 batch，但生产建议单语句 + 应用层幂等）。
+- 每次 POST 独立，compute 空闲 5 min 后自动 suspend。
+- **禁止任何定时心跳**（15s/4min 都会阻止 scale-to-zero）。
+
+## 1.2 Python 生产实现（`libs/neon_http.py`）
+
+```python
+"""Neon HTTP /sql 短连接客户端 — 生产级"""
+from __future__ import annotations
+
+import os
+import time
+import logging
+from typing import Any, Optional
+
+import httpx
+
+log = logging.getLogger("nexus.neon_http")
+
+class NeonHTTPError(Exception):
+    def __init__(self, status: int, body: str):
+        self.status = status
+        self.body = body
+        super().__init__(f"Neon HTTP {status}: {body[:500]}")
+
+
+class NeonHTTP:
+    """
+    每次 execute 独立 POST，用完即断。
+    连接串优先 POSTGRES_* 拼装，或直接 NEON_DATABASE_URL。
+    """
+
+    def __init__(
+        self,
+        conn_str: Optional[str] = None,
+        timeout: float = 30.0,
+        max_retries: int = 3,
+    ):
+        self.conn_str = conn_str or self._build_conn_str()
+        if not self.conn_str:
+            raise ValueError("Neon connection string missing")
+        # /sql 端点：从 host 推导（去掉 -pooler 亦可）
+        host = self._extract_host(self.conn_str)
+        self.sql_url = f"https://{host}/sql"
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    @staticmethod
+    def _build_conn_str() -> str:
+        url = os.getenv("NEON_DATABASE_URL") or os.getenv("DATABASE_URL")
+        if url:
+            return url
+        user = os.getenv("POSTGRES_USER")
+        password = os.getenv("POSTGRES_PASSWORD")
+        host = os.getenv("POSTGRES_HOST")
+        port = os.getenv("POSTGRES_PORT", "5432")
+        db = os.getenv("POSTGRES_DB", "neondb")
+        if all([user, password, host]):
+            return (
+                f"postgresql://{user}:{password}@{host}:{port}/{db}"
+                f"?sslmode=require"
+            )
+        return ""
+
+    @staticmethod
+    def _extract_host(conn_str: str) -> str:
+        # postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/db?...
+        after_at = conn_str.split("@", 1)[-1]
+        host_port = after_at.split("/", 1)[0]
+        return host_port.split(":")[0]
+
+    def execute(
+        self,
+        query: str,
+        params: Optional[list[Any]] = None,
+    ) -> dict[str, Any]:
+        payload = {"query": query, "params": params or []}
+        headers = {
+            "Neon-Connection-String": self.conn_str,
+            "Content-Type": "application/json",
+        }
+        last_err: Optional[Exception] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    r = client.post(self.sql_url, json=payload, headers=headers)
+                if r.status_code >= 400:
+                    raise NeonHTTPError(r.status_code, r.text)
+                return r.json()
+            except (httpx.TransportError, NeonHTTPError) as e:
+                last_err = e
+                if attempt < self.max_retries:
+                    sleep = min(2 ** attempt, 8)
+                    log.warning("neon_http retry %s/%s: %s", attempt, self.max_retries, e)
+                    time.sleep(sleep)
+                else:
+                    raise
+        raise last_err  # type: ignore
+
+    def execute_many(self, statements: list[tuple[str, list[Any]]]) -> list[dict]:
+        """顺序短请求；不做交互事务（scale-to-zero 友好）。"""
+        results = []
+        for q, p in statements:
+            results.append(self.execute(q, p))
+        return results
+
+
+# 便捷单例（进程内复用配置，每次仍新建 httpx 短连接）
+_client: Optional[NeonHTTP] = None
+
+def get_neon() -> NeonHTTP:
+    global _client
+    if _client is None:
+        _client = NeonHTTP()
+    return _client
+```
+
+**使用约定**
+- `persist_to_neon.py`、task claim/complete 全部走 `get_neon().execute(...)`。
+- mem0 / pgvector 可继续用 **pooler 短 TCP**（`psycopg2` 打开 → 查 → 立刻 close），与 HTTP 主路分离。
+- 批量 upsert 用单条 `INSERT ... ON CONFLICT`，减少 round-trip。
+
+---
+
+# 二、Cloudflare R2 生命周期规则配置
+
+## 2.1 推荐策略（Nexus）
+
+| 前缀 | 动作 | 天数 | 说明 |
+|------|------|------|------|
+| `snapshots/` | 删除对象 | 30 | 不可变快照，保留约 1 个月 |
+| `""`（可选） | 中止未完成 multipart | 7 | 默认已有，可显式加强 |
+
+**不要**对 `MANIFEST.json` 单独删到只剩空指针——删除由 `snapshots/` 前缀统一老化；应用层可保留最近 N 份 MANIFEST 副本（可选）。
+
+## 2.2 Wrangler 一键配置
+
+```bash
+# 删除 30 天前的 snapshots/
+npx wrangler r2 bucket lifecycle add YOUR_BUCKET_NAME \
+  --name expire-snapshots-30d \
+  --prefix snapshots/ \
+  --expire-days 30
+
+# 可选：全桶未完成 multipart 7 天中止（若未默认）
+npx wrangler r2 bucket lifecycle add YOUR_BUCKET_NAME \
+  --name abort-multipart-7d \
+  --abort-multipart-days 7
+```
+
+## 2.3 JSON 整表设置（`lifecycle-nexus.json`）
+
+```json
+{
+  "rules": [
+    {
+      "id": "expire-snapshots-30d",
+      "enabled": true,
+      "conditions": { "prefix": "snapshots/" },
+      "deleteObjectsTransition": {
+        "condition": { "type": "Age", "maxAge": 2592000 }
+      }
+    },
+    {
+      "id": "abort-multipart-7d",
+      "enabled": true,
+      "conditions": { "prefix": "" },
+      "abortMultipartUploadsTransition": {
+        "condition": { "type": "Age", "maxAge": 604800 }
+      }
+    }
+  ]
+}
+```
+
+```bash
+npx wrangler r2 bucket lifecycle set YOUR_BUCKET_NAME --file lifecycle-nexus.json
+```
+
+## 2.4 S3 兼容 API（boto3）
+
+```python
+import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=os.environ["R2_ENDPOINT"],
+    aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+    region_name="auto",
+)
+
+s3.put_bucket_lifecycle_configuration(
+    Bucket=os.environ["R2_BUCKET"],
+    LifecycleConfiguration={
+        "Rules": [
+            {
+                "ID": "expire-snapshots-30d",
+                "Status": "Enabled",
+                "Filter": {"Prefix": "snapshots/"},
+                "Expiration": {"Days": 30},
+            },
+            {
+                "ID": "abort-multipart-7d",
+                "Status": "Enabled",
+                "Filter": {"Prefix": ""},
+                "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+            },
+        ]
+    },
+)
+```
+
+注意：R2 删除通常在规则生效后 24h 内完成；Class A 对 lifecycle 内部操作不计入你的业务写入配额（以官方为准）。Bucket Lock 若启用会优先于 lifecycle。
+
+---
+
+# 三、完整补丁级代码
+
+## 3.1 `start.sh`（镜像内瘦引导，全文）
+
+```bash
+#!/usr/bin/env bash
+# Nexus start.sh — 环境层墓碑，永不改动（除架构升级）
+set -euo pipefail
+
+log() { echo "[start.sh $(date -u +%H:%M:%S)] $*"; }
+
+wait_for_bucket_mount() {
+  local i=0
+  while true; do
+    if [ -d /data ] && touch /data/.rw_test 2>/dev/null; then
+      rm -f /data/.rw_test
+      log "bucket /data ready"
+      return 0
+    fi
+    i=$((i + 1))
+    if [ "$i" -gt 90 ]; then
+      log "FATAL: /data mount timeout"
+      exit 1
+    fi
+    sleep 2
+  done
+}
+
+bootstrap_from_bucket() {
+  local owner="${HF_OWNER:?HF_OWNER required}"
+  local bucket="${NEXUS_LOGIC_BUCKET:-logic}"
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    log "hf buckets sync attempt $attempt"
+    if HF_TOKEN="${HF_TOKEN:?}" hf buckets sync \
+      "hf://buckets/${owner}/${bucket}" /data/ --no-delete; then
+      log "bootstrap ok"
+      return 0
+    fi
+    sleep $((attempt * 3))
+  done
+  log "FATAL: bootstrap failed"
+  exit 1
+}
+
+wait_for_bucket_mount
+bootstrap_from_bucket
+
+# exec：让 real-start 接管 PID 链，SIGTERM 可传递
+if [ -f /data/scripts/real-start.sh ]; then
+  exec bash /data/scripts/real-start.sh
+else
+  log "FATAL: /data/scripts/real-start.sh missing"
+  exit 1
+fi
+```
+
+## 3.2 `real-start.sh`（逻辑层，完整生产版）
+
+```bash
+#!/usr/bin/env bash
+# Nexus real-start.sh — Bucket 逻辑层，可日常同步
+# 方案 C 瘦引导 + SIGTERM 闭环 + R2 restore
+set -euo pipefail
+
+log() { echo "[real-start $(date -u +%H:%M:%S)] $*"; }
+
+HERMES_HOME="${HERMES_HOME:-/opt/data/.hermes}"
+LOG_DIR="/opt/data/logs"
+mkdir -p "$HERMES_HOME" "$LOG_DIR" /opt/data
+
+export PYTHONPATH="/data/libs:${PYTHONPATH:-}"
+export HERMES_HOME
+export PATH="/data/scripts:${PATH:-}"
+
+PIDS=()
+SHUTTING_DOWN=0
+
+persist_once() {
+  log "persist --once begin"
+  # 顺序：state → home → neon(可选) → r2 json（脚本需支持 --once）
+  python /data/scripts/state_db_uploader.py --once 2>>"$LOG_DIR/persist.err" || true
+  python /data/scripts/home_files_uploader.py --once 2>>"$LOG_DIR/persist.err" || true
+  python /data/scripts/persist_to_neon.py --once 2>>"$LOG_DIR/persist.err" || true
+  python /data/scripts/persist_to_r2.py --once 2>>"$LOG_DIR/persist.err" || true
+  log "persist --once done"
+}
+
+term_handler() {
+  if [ "$SHUTTING_DOWN" -eq 1 ]; then
+    return
+  fi
+  SHUTTING_DOWN=1
+  log "SIGTERM received"
+  # 先停主进程与 daemons
+  for pid in "${PIDS[@]:-}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+  # 等待最多 6s 让主进程收尾
+  sleep 6
+  persist_once
+  sleep 4
+  log "exit 0 after SIGTERM"
+  exit 0
+}
+
+trap term_handler SIGTERM SIGINT
+
+# ---------- restore ----------
+log "restore from R2 (if configured)"
+if [ -n "${R2_BUCKET:-}" ] && [ -n "${R2_ENDPOINT:-}" ]; then
+  python /data/scripts/restore_from_r2_home.py 2>>"$LOG_DIR/restore.err" || log "R2 home restore skip/fail"
+else
+  # 兼容旧 Bucket 路径
+  python /data/scripts/restore_home_files.py 2>>"$LOG_DIR/restore.err" || true
+  python /data/scripts/restore_state.py 2>>"$LOG_DIR/restore.err" || true
+fi
+
+# 清理危险残留
+rm -f "$HERMES_HOME/.env" "$HERMES_HOME/auth.json" "$HERMES_HOME"/*.pid 2>/dev/null || true
+
+# 从 Secrets 合成运行时 .env（示例键；按实际 Secrets 扩展）
+{
+  echo "# generated by real-start — do not commit"
+  [ -n "${GLM_API_KEY:-}" ] && echo "GLM_API_KEY=${GLM_API_KEY}"
+  [ -n "${GLM_BASE_URL:-}" ] && echo "GLM_BASE_URL=${GLM_BASE_URL}"
+  [ -n "${API_SERVER_KEY:-}" ] && echo "API_SERVER_KEY=${API_SERVER_KEY}"
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+  [ -n "${NEXUS_API_KEY:-}" ] && echo "NEXUS_API_KEY=${NEXUS_API_KEY}"
+  [ -n "${POSTGRES_HOST:-}" ] && echo "POSTGRES_HOST=${POSTGRES_HOST}"
+  [ -n "${POSTGRES_PASSWORD:-}" ] && echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
+  [ -n "${POSTGRES_USER:-}" ] && echo "POSTGRES_USER=${POSTGRES_USER}"
+  [ -n "${POSTGRES_DB:-}" ] && echo "POSTGRES_DB=${POSTGRES_DB}"
+  [ -n "${R2_ENDPOINT:-}" ] && echo "R2_ENDPOINT=${R2_ENDPOINT}"
+  [ -n "${R2_ACCESS_KEY_ID:-}" ] && echo "R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}"
+  [ -n "${R2_SECRET_ACCESS_KEY:-}" ] && echo "R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}"
+  [ -n "${R2_BUCKET:-}" ] && echo "R2_BUCKET=${R2_BUCKET}"
+} > "$HERMES_HOME/.env"
+chmod 600 "$HERMES_HOME/.env"
+
+# plugins stage
+if [ -d /data/scripts/plugins ]; then
+  mkdir -p "$HERMES_HOME/plugins"
+  cp -a /data/scripts/plugins/. "$HERMES_HOME/plugins/" || true
+fi
+
+# config seed
+if [ ! -f "$HERMES_HOME/config.yaml" ] && [ -f /data/templates/config.yaml ]; then
+  cp /data/templates/config.yaml "$HERMES_HOME/config.yaml"
+fi
+
+# ---------- daemons ----------
+start_daemon() {
+  local name="$1"
+  shift
+  nohup "$@" >>"$LOG_DIR/${name}.log" 2>&1 &
+  local pid=$!
+  PIDS+=("$pid")
+  echo "$pid" > "$HERMES_HOME/${name}.pid"
+  log "daemon $name pid=$pid"
+}
+
+# persist：--init 模式，不跑定时 SQL 心跳；周期由脚本内 sleep + dirty
+start_daemon persist-neon python /data/scripts/persist_to_neon.py --init
+start_daemon persist-r2   python /data/scripts/persist_to_r2.py --daemon
+start_daemon state-up     python /data/scripts/state_db_uploader.py --daemon
+start_daemon home-up      python /data/scripts/home_files_uploader.py --daemon
+
+if [ "${KEEPALIVE_ENABLED:-0}" = "1" ]; then
+  start_daemon keepalive python /data/scripts/keepalive.py
+fi
+
+# ---------- main ----------
+log "exec hermes main"
+# 后台起主进程并纳入 PIDS，便于 trap 杀
+python -m app.main:boot >>"$LOG_DIR/hermes.log" 2>&1 &
+MAIN_PID=$!
+PIDS+=("$MAIN_PID")
+echo "$MAIN_PID" > "$HERMES_HOME/hermes.pid"
+log "hermes pid=$MAIN_PID"
+
+# 主线程等待：任一关键进程死则退出触发 HF 重启策略
+while true; do
+  if ! kill -0 "$MAIN_PID" 2>/dev/null; then
+    log "hermes exited"
+    persist_once
+    exit 1
+  fi
+  sleep 5
+done
+```
+
+> 说明：若 `app.main:boot` 内部已用 daemon 线程 + 主线程 sleep，可改为 `exec python -m app.main:boot` 并把 trap 放到 Python 侧；上述写法保证 shell 层也能 flush。
+
+## 3.3 task_queue 迁移 SQL（完整）
+
+```sql
+-- migrations/2026-08-22_task_queue_claim.sql
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS task_queue (
+  task_id      text PRIMARY KEY,
+  task         text,
+  user_id      text,
+  status       text NOT NULL DEFAULT 'pending',
+  kind         text NOT NULL DEFAULT 'generic',
+  input        jsonb NOT NULL DEFAULT '{}'::jsonb,
+  output       jsonb,
+  result       text,
+  attempts     int NOT NULL DEFAULT 0,
+  locked_at    timestamptz,
+  locked_by    text,
+  run_after    timestamptz NOT NULL DEFAULT now(),
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz
+);
+
+-- 兼容旧表：补列
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS locked_at timestamptz;
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS locked_by text;
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS run_after timestamptz DEFAULT now();
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS kind text DEFAULT 'generic';
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS input jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS output jsonb;
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS attempts int DEFAULT 0;
+
+-- 约束（若已存在会失败，可手工忽略）
+DO $$
+BEGIN
+  ALTER TABLE task_queue DROP CONSTRAINT IF EXISTS task_queue_status_check;
+  ALTER TABLE task_queue ADD CONSTRAINT task_queue_status_check
+    CHECK (status IN ('pending','claimed','running','completed','failed','dead'));
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_task_queue_claimable
+  ON task_queue (run_after, created_at)
+  WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_task_queue_stuck
+  ON task_queue (locked_at)
+  WHERE status IN ('claimed','running');
+
+COMMIT;
+```
+
+**Claim SQL（应用内）**
+
+```sql
+WITH next AS (
+  SELECT task_id
+  FROM task_queue
+  WHERE status = 'pending'
+    AND run_after <= now()
+    AND attempts < 5
+  ORDER BY created_at
+  FOR UPDATE SKIP LOCKED
+  LIMIT 1
+)
+UPDATE task_queue t
+SET status = 'claimed',
+    locked_at = now(),
+    locked_by = $1,
+    attempts = attempts + 1,
+    updated_at = now()
+FROM next
+WHERE t.task_id = next.task_id
+RETURNING t.*;
+```
+
+**回收卡住任务（cron 或 persist 顺带）**
+
+```sql
+UPDATE task_queue
+SET status = 'pending',
+    locked_at = NULL,
+    locked_by = NULL,
+    updated_at = now()
+WHERE status IN ('claimed', 'running')
+  AND locked_at < now() - interval '15 minutes'
+  AND attempts < 5;
+
+UPDATE task_queue
+SET status = 'dead',
+    updated_at = now()
+WHERE status IN ('claimed', 'running')
+  AND locked_at < now() - interval '15 minutes'
+  AND attempts >= 5;
+```
+
+## 3.4 `persist_to_r2.py` 核心片段（--once / daemon）
+
+```python
+# 写顺序：先对象后 MANIFEST；sha256；空跳过
+import hashlib, json, os
+from datetime import datetime, timezone
+import boto3
+
+def put_snapshot(table: str, rows: list, s3, bucket: str, ts: str) -> dict:
+    if not rows:
+        return None  # 空跳过
+    body = json.dumps(rows, ensure_ascii=False, default=str).encode("utf-8")
+    key = f"snapshots/{ts}/{table}.json"
+    sha = hashlib.sha256(body).hexdigest()
+    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+    return {"key": key, "sha256": sha, "bytes": len(body), "rows": len(rows)}
+
+def persist_once(neon, s3, bucket: str):
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    objects = {}
+    for table, q in [
+        ("agent_states", "SELECT * FROM agent_states"),
+        ("task_logs", "SELECT * FROM task_logs ORDER BY id DESC LIMIT 10000"),
+        ("long_memory", "SELECT * FROM long_memory"),
+        ("skills_index", "SELECT * FROM skills_index"),
+    ]:
+        res = neon.execute(q)
+        meta = put_snapshot(table, res.get("rows") or [], s3, bucket, ts)
+        if meta:
+            objects[table] = meta
+    if not objects:
+        return
+    gen = int(os.environ.get("R2_MANIFEST_GEN", "0")) + 1  # 或读旧 MANIFEST
+    manifest = {"gen": gen, "ts": ts, "objects": objects}
+    s3.put_object(
+        Bucket=bucket,
+        Key="MANIFEST.json",
+        Body=json.dumps(manifest).encode(),
+        ContentType="application/json",
+    )
+```
+
+## 3.5 `restore_from_r2.py` 接口骨架
+
+```python
+# --list / --verify-only / --table / --all
+# task_logs 永不写回；sha256 不符跳过；空跳过
+def restore_table(name: str, verify_only: bool = False):
+    man = load_manifest()
+    obj = man["objects"].get(name)
+    if not obj:
+        return
+    data = s3.get_object(...)["Body"].read()
+    if hashlib.sha256(data).hexdigest() != obj["sha256"]:
+        raise ValueError("sha256 mismatch")
+    rows = json.loads(data)
+    if not rows:
+        return
+    if name == "task_logs":
+        return  # 不写回
+    if verify_only:
+        return
+    for row in rows:
+        neon.execute(
+            f"INSERT INTO {name} (...) VALUES (...) ON CONFLICT DO UPDATE ...",
+            params_from(row),
+        )
+```
+
+---
+
+# 四、落地顺序（补丁应用）
+
+1. 合并 `libs/neon_http.py`，改 `persist_to_neon.py` / task API 全部走 HTTP。  
+2. 执行 task_queue 迁移 SQL。  
+3. 替换 Bucket 内 `scripts/real-start.sh` + 确认镜像 `start.sh` 为 exec 版。  
+4. 配置 R2 lifecycle（30 天 snapshots）。  
+5. 本地/Space 发一次 SIGTERM，确认 log 中有 `persist --once done`。  
+6. `sync-logic-bucket.sh` → Restart（不触 rebuild）。
+
+如需把某一文件改成与你们仓库路径完全一致的 unified diff（`diff -u a b`），请给出当前文件路径与片段，我可以按行号输出精确 patch。
+

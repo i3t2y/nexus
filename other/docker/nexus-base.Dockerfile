@@ -128,7 +128,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements-base.txt
 # pin tag 不 pin main(防 break;升级改 tag + rebuild)
 # clone 到 /opt/hermes-agent(系统级只读供 import,root 拥有,user 只读 import 即可)
 # editable --system 安装:egg-link 写进系统 site-packages 指向源码,任何 user 能 import run_agent
-ARG HERMES_AGENT_TAG=v2026.8.18
+ARG HERMES_AGENT_TAG=v2026.8.31
 RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
         https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
     && uv pip install --system --no-cache-dir -e /opt/hermes-agent --no-deps
@@ -151,7 +151,7 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
 #   - 缺 env → list_providers() 空 → gate `SystemExit("Refusing to bind...")` fail-closed 拒起
 #   - 配齐 → gate 通过 → /login 密码表单(scrypt 哈希 + HMAC stateless cookie,无 OAuth/IDP/DB)
 #
-# 仅改一处 CORS(web_server.py v0.20.4 v2026.8.18 核:patch_web_server.py 文本锚 allow_origin_regex=... v2026.8.18 在 L543,zero drift;行漂 文本锚无碍):
+# 仅改一处 CORS(web_server.py v0.21.0 v2026.8.31 核:patch_web_server.py 文本锚 allow_origin_regex=... v2026.8.31 在 L679,zero drift;行漂 文本锚无碍):
 #   allow_origin_regex(限 localhost)→ allow_origins=["*"]。
 #   解 HF iframe embed — sonoke-h.hf.space 在 huggingface.co iframe 内渲染,SPA fetch JS/CSS/WS
 #   跨域回 sonoke-h.hf.space/api/*,默认 CORS regex 拒 → 换 allow_origins=["*"] 放行所有域
@@ -160,19 +160,37 @@ RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
 #   鉴权走 BasicAuthProvider cookie(HMAC-sig),非 CORS credential — allow_origins=["*"] 与 cookie
 #   鉴权无冲突(CORS preflight 不挡 SameSite cookie 流)。
 #
-# 注:HERMES_AGENT_TAG 升 v2026.8.18(v0.20.4)自 v2026.8.3(v0.20.0,3c27eb6,2026-08-03)。
-#   v0.20.0→v0.20.4 全核兼容:requires-python ">=3.11,<3.14" 同(3.11 可跑);root engines 同;
-#   pyproject deps diff:主版本号 0.20.0→0.20.4;安全 pin 升(cryptography 48→50 CVE-2026-69247 Bleichenbacher /
-#   aiohttp 3.14.1→3.14.3 smuggling GHSA / telegram 22.6→22.8 / mautrix 0.21.0→0.21.1);nemo-relay 0.6→0.7.1
-#   加 android guard(我 linux x86_64 非 android 满足);cli extra 删(simple-term-menu)但 dashboard 命令不绑
-#   cli extra(main.py:10005 + container_boot.py:371)无影响;无 PEP 695/3.12+ 语法。
-#   patch 文本锚 allow_origin_regex v0.20.4 web_server.py:543 在(行漂 文本锚无碍,patch_web_server.py
-#   `old_cors in s` assert 非行号);plugins_cmd _install_plugin_core / gateway run/--accept-hooks/--replace /
-#   HERMES_TUI_DIR(main.py:2351)/HERMES_WEB_DIST(web_server.py:137) flag+env 全在(grep 双证)。
-#   state.db corrupt 修复:#88234 session_search(cli_commands_mixin.py:958)+ backup.py PRAGMA integrity_check
-#   结构探针纳入。mcp extra 升 1.28.1→2.0.0(MCP 协议 revision 2026-07-28)+ httpx2==2.7.0(独立 module
-#   name 与 httpx side-by-side 无冲突)→ 见下方独立 pip 装段。
-#   升级改 tag 一行 + 4 pin 对齐 + mcp pip 段 + rebuild。
+# 注:HERMES_AGENT_TAG 升 v2026.8.31(v0.21.0,"The Pantheon Release")自 v2026.8.18(v0.20.4,6001d05,2026-08-19)。
+#   v0.20.4→v0.21.0 全核兼容(2026-09-03 本地 clone v2026.8.31 逐锚点实证,见认证记忆 nexus-hermes-upgrade);
+#   - requires-python ">=3.11,<3.14" 同(3.11-slim 可跑)✓
+#   - root engines: node ">=22.22.0"→"^22.22.0 || ^24.11.0 || >=26.0.0"(node:22-bookworm 22.23.x 满足 ^22.22.0)✓;
+#     npm "<11.10.0 || >=11.17.0" 同 ✓
+#   - pyproject 主依赖:openai==2.24.0 同 / cryptography==50.0.0 同 / httpx[socks]==0.28.1 同 /
+#     nemo-relay ">=0.7.1,<0.8" 同 / starlette==1.3.1 同 —— 零 diff
+#   - requirements-base.txt 四件 messaging 子集(aiohttp 3.14.3 / telegram 22.8 / discord 2.7.1 /
+#     brotlicffi 1.2.0.1)与 v0.21.0 [messaging] extra 全比对一致,无需改本文件
+#   - anthropic [anthropic] extra==0.87.0 同(Dockerfile 下方独立 pip pin 0.87.0 仍对齐)✓
+#   - 路径重构(god-file Phase 2):gateway/config→subcommands/{gateway,dashboard}.py 拆分、
+#     但对外 CLI 稳定:`hermes gateway run --replace --accept-hooks`(subcommands/gateway.py:61,98 +
+#     _parser.py:266)✓;bare `hermes dashboard --host/--port/--skip-build/--no-open` 仍启动 server
+#     (subcommands/dashboard.py:26-49,107-109 保留 set_defaults func=cmd_dashboard,新增 headless
+#     `hermes serve` 子命令)✓ —— start.sh 调用不须改
+#   - api_server adapter 挪 hermes_cli/→gateway/platforms/api_server.py:17,2219,3165:
+#     POST /v1/runs + GET /v1/health {"status":"ok","platform":"hermes-agent"} 全在;
+#     API_SERVER_KEY≥16 触发(config.py:2299 + api_server.py:1902)同 ✓
+#   - CORS patch 锚点 allow_origin_regex v0.21.0 在 web_server.py:679(L543→L679 行漂,文本锚无碍,
+#     patch_web_server.py `old_cors in s` assert 非行号)✓
+#   - HERMES_TUI_DIR(main.py)/HERMES_WEB_DIST(main.py:12045)/HERMES_AGENT_DIR 全在 ✓
+#     web_dist 新增校验(tests/hermes_cli/test_dashboard_web_dist_validation.py:自定义 WEB_DIST 无
+#     index.html exit 1)k 我 prebuild 产物含 index.html(Dockerfile test -f)不受影响
+#   - is_sqlite_wal_reset_vulnerable 在 hermes_state.py(K-R6 闸门仍有效)✓
+#   - plugins_cmd._install_plugin_core / Discord _enable_from_env(gateway/config.py:2038)在 ✓
+#   - zai/GLM provider 在 plugins/model-providers/zai/(env_vars GLM_API_KEY/ZAI_API_KEY)✓ + 新模型 catalog
+#     (GLM-5.3-Flash/qwen3.8/Gemini 3.7)广度升级,兼容旧 GLM-5.2
+#   - mcp extra 同 mcp==2.0.0/httpx2==2.7.0/starlette==1.3.1 → 下方独立 pip 段不须动 ✓
+#   - ⚠️ 行为变化:protected instruction files(AGENTS.md/skills/memory 写)一律需写审批、
+#     deep redaction sweep(secret 泄漏收敛)—— 对下方逻辑层 config/plugin 无接口破坏,仅语义加固
+#   升级改 tag 一行 + rebuild,零依赖/pin/patch/build 命令改动。
 #
 # 施工:独立脚本 docker/patch_web_server.py(只 1 锚点;避 shell 行续转义 + Python 单行分号地雷;
 #   脚本多行 + 函数,py_compile 可验;锚漂即 build 期 AssertionError 拦建,跨升级稳健)。

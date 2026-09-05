@@ -1,0 +1,512 @@
+# Nexus 内容云脑：AI 视频 / 短剧 / 电影 / 自媒体 — 生产级最强方案
+
+**身份：** 首席架构师收口版（叠全部会话 + 仓内四层永续 + 2026-08 内容产线实证）  
+**场景：** 日常产出短视频、竖屏短剧、漫剧、短片、自媒体多平台分发  
+**不翻案：** 一热 Space 三件套同进程 · R2+Neon · MANIFEST 围栏 · 无 Neon 心跳 · curl NPC · P0 flush 优先  
+
+---
+
+## 0. 第一性原理（内容向）
+
+| # | 原理 | 导出 |
+|---|------|------|
+| **C1** | **一致性 > 单镜头画质** | 角色/场景/音色锁在 R2 资产库，禁止每集从零抽卡 |
+| **C2** | **编排在云，重渲染在外** | HF 只做脑与状态；生图/生视频/合成不进免费 Docker |
+| **C3** | **一份系列圣经** | `user_id=nexus` + 项目级 `series_id`；Mem0 记人设与禁忌，不记成片二进制 |
+| **C4** | **异步流水线** | 生视频分钟～小时级 → 只走 `task_queue`，图内禁止卡死 |
+| **C5** | **闲则释放** | Space 可 cron 保活；Neon 必睡；成片进 R2/对象存储，不进 0.5GB 库 |
+
+社区共识（2026）：工业差距在 **流水线与资产治理**，不在「又接一个模型」。Hermes 社区已有「IM → 可灵 → ffmpeg → 分发」闭环；短剧开源多走 **剧本→资产→分镜→I2V→合成** 多 Agent 技能链。
+
+---
+
+## 1. 目标拓扑（内容永续三件套）
+
+```text
+你（IM / Studio / 本机）
+        │
+        ▼
+┌──── sonoke/h  唯一热大脑（三件套同进程）─────────────┐
+│  Hermes：对话 · 系列决策 · 写记忆 · 入队 · 验收话术     │
+│  LangGraph 库：短图（拆集/质检/分发计划）               │
+│  Mem0 OSS → Neon：角色/世界观/禁忌/爆款规律（语义）     │
+│  persist：R2 home+sessions · MANIFEST CAS · TERM flush │
+└───────────────┬──────────────────────────────────────┘
+                │
+     ┌──────────┼──────────┬──────────────┐
+     ▼          ▼          ▼              ▼
+  Neon(一份)  R2(一份)   OmniRoute      task_queue
+  mem0/队列   资产+成片   文本/多模路由   kind 见下
+  checkpoint  圣经/skills
+     │
+     ├─ 本机 AgentOS：剪辑/Comfy/可灵CLI/发布 · 同一 Mem0 · 扫队列
+     ├─ CNB NPC：只干「脚本/工具代码/批处理脚本」不渲染视频
+     └─ 外 API：可灵/Seedance/Kling/TTS/…（密钥在本机或 Worker，不进 HF 长跑）
+
+席位：A 热脑 | B(nmem) 冷备 Hermes | C(omn) 仅路由，无大脑密钥
+```
+
+**禁止：** 在 HF 上跑 ComfyUI、本地 GGUF、Chromium、1s 扫队、三 Space 双热写记忆。
+
+---
+
+## 2. 内容流水线映射到 Nexus
+
+| 阶段 | 谁做 | 介质 | 备注 |
+|------|------|------|------|
+| 选题 / 系列圣经 | Hermes + 短图 | Mem0 + `MEMORY.md` + R2 `projects/<id>/bible/` | 人设、禁改设定、受众 |
+| 分集剧本 | Hermes 或 `kind=script` | R2 文本 + Mem0 摘要 | drama-skills 类 skill |
+| 角色/场景资产锁 | 本机或 API → **上传 R2** | `assets/char|scene|voice/` | **一致性之源** |
+| 分镜 & 提示词 | Hermes 短图 | R2 `storyboard/` | 结构化 JSON |
+| 生图 / 生视频 | **外 API / 本机** | 任务 `kind=render_*` | 可灵 i2i/i2v、Seedance、Kling… |
+| 配音 / BGM | 本机或 API | R2 `audio/` | |
+| 合成 / 字幕 | 本机 ffmpeg/CapCut | R2 `deliverables/` | HF 不做 |
+| 质检 / 重抽 | 短图 reflect | Mem0「上次翻车原因」 | |
+| 发布 | 本机桥或专用 skill | 平台 API | 抖音/YT/掘金… |
+| 复盘 | session_end → Mem0 | 爆款钩子、弃用提示词 | |
+
+**一句话：** 云脑管 **记什么、派什么、验什么**；本机/API 管 **画出来、剪出来、发出去**。
+
+---
+
+## 3. `task_queue.kind`（内容向扩展）
+
+在已有枚举上扩展（扁平表 Stage A 兼容）：
+
+```text
+generic | graph | npc | claude_code | pi | dsh
++ script | storyboard | render_image | render_video
+| tts | edit_compile | publish | review
+```
+
+| kind | 消费者 | 典型 input |
+|------|--------|------------|
+| `script` / `storyboard` | 云内短图或本机 | `{series_id, ep, constraints}` |
+| `render_image` / `render_video` | **本机桥** | `{asset_refs[], prompt, model, ratio}` |
+| `edit_compile` | 本机 | `{clip_keys[], transitions, audio}` |
+| `publish` | 本机 | `{platform, file_key, meta}` |
+| `npc` | CNB | 只写自动化脚本/小工具，不替代渲染 |
+| `claude_code`/`pi`/`dsh` | 本机 | 改流水线代码、ffmpeg 脚本 |
+
+HF **禁止**常驻 poll；本机 15–30s `SKIP LOCKED`；派活后 Hermes 可顺手 claim 一次。
+
+---
+
+## 4. 记忆与资产（内容不翻车的核心）
+
+### 4.1 三层记忆（沿用合同）
+
+| 层 | 内容产线写什么 | 不写什么 |
+|----|----------------|----------|
+| **L0** USER/MEMORY/系列 SOUL | 「女主永不换发型」「本季反派名」 | 整段剧本 |
+| **L1** Mem0 | 可检索：角色关系、已用钩子、平台规则 | 视频文件、embedding 成片 |
+| **L2** state.db→R2 | 对话与决策过程 | 当唯一圣经 |
+
+`user_id=nexus`，`agent_id=hermes-cloud`；本机 `hermes-local`。  
+**每个系列**用 Mem0 metadata / 路径前缀 `series_id=`，避免多剧串台。
+
+### 4.2 R2 资产树（热仓升级）
+
+```text
+s3://nexus-home/
+  MANIFEST.json                    # CAS 围栏 + gen
+  current/home.tar.gz              # 人设 skills config（剥密钥）
+  current/sessions.tar.gz          # state.db.bak
+  projects/
+    <series_id>/
+      bible/                       # 大纲、人设表、禁忌
+      assets/char|scene|prop|voice/
+      storyboard/epXX.json
+      prompts/
+      deliverables/epXX/           # 成片与封面（大文件）
+  snapshots/…
+```
+
+- 成片走 **R2 大对象**，不进 Neon、不进 HF 盘  
+- 周期仍 **10min + dirty + TERM**；大 deliverable **完成即 PUT**，不进 home.tar  
+- 白名单打包不变；**禁止** Dataset live  
+
+### 4.3 Skills（内容技能包）
+
+云 Hermes `skills/`（R2 同步）建议固定：
+
+- `series-bible` / `episode-script` / `asset-lock`  
+- `storyboard-json` / `prompt-i2v`  
+- `qc-consistency`（对照 R2 角色 ref 写审查意见）  
+- `publish-checklist`  
+
+可吸收开源 **drama-skills** 思路：产出以**文本与结构化 JSON**为主，渲染经 adapter 出队。  
+出版者：**云或本机 Git 二选一**，禁止三机盲改 SKILL。
+
+---
+
+## 5. 三件套在内容场景中的精确职责
+
+| 组件 | 做 | 不做 |
+|------|----|------|
+| **Hermes** | IM 接单、系列决策、验收话术、入队、读 R2 索引 | 本地渲染、长时间 ffmpeg |
+| **LangGraph** | 短图：拆 ep、生成分镜表、质检清单、发布计划 | 节点内调可灵等长 API（改入队） |
+| **Mem0** | 「这个角色上次怎样」「哪类开头涨播」 | 存 mp4、当素材盘 |
+
+**OmniRoute：** 只路由**文本/轻多模**（剧本、提示词、审查）；贵模型按时段策略（社区常用谷时段 DeepSeek 等）。
+
+---
+
+## 6. 持久化与席位（沿用硬修正，内容加一条）
+
+| 锁 | 内容场景注意 |
+|----|----------------|
+| R2 MANIFEST CAS | 备机禁止用旧资产包盖主 |
+| 无 Neon 15s 心跳 | 否则月中停，整条产线失忆 |
+| Mem0 短 TCP pooler | 维数 768/1536，对齐表结构 |
+| Checkpointer 仅 DIRECT | 短图用完即关 |
+| cron 只 GET 主 `/health` | 不 ping 备、不 ping `/ready` |
+| **成片与 ref 图只上 R2** | Neon 0.5GB 只给向量+队列 |
+
+三席：`sonoke/h` 热 · `nmem/memlg`→冷备（一次墓碑对齐后）· `omn` 仅路由。
+
+---
+
+## 7. 日常工作流（你怎么用）
+
+```text
+1. IM：「新短剧：都市打脸，女主A锁资产 char/A_v3，先写第1集」
+2. Hermes → 读 Mem0/R2 圣经 → 出剧本 JSON → 你点头
+3. 入队 storyboard → 你确认分镜
+4. 入队 render_* → 本机桥调可灵/Seedance… → 结果 key 回写 output
+5. 入队 edit_compile → 本机合成 → deliverables/ 上 R2
+6. 质检短图 + 你验收 → publish 队列
+7. session_end → Mem0 记「本集钩子/翻车点」
+```
+
+人只卡 **创意与终审**；中间异步。
+
+---
+
+## 8. 与「最强」商业/开源产线的关系
+
+| 外部能力 | Nexus 接法 |
+|----------|------------|
+| 可灵 / Seedance / Kling / 一站式画布 | **本机或付费 Worker 执行**，状态回 `task_queue` + R2 |
+| ComfyUI / AutoAnimation GPU | **绝不进 HF**；本机或租 GPU |
+| drama-skills / 短剧 Agent 公司模板 | **技能与 JSON 契约**迁入 Hermes skills |
+| CNB NPC | 写爬虫、发布脚本、批处理，不替代 I2V |
+
+Nexus 的差异化不是「再做一个短剧 App」，而是：**永续身份 + 统一记忆 + 可迁移资产 + 免费档活过月底的云脑**。
+
+---
+
+## 9. 实施序（内容优先仍服从 P0）
+
+```text
+P0    TERM flush + 两 tar.gz + MANIFEST CAS + /health
+P0.5  无 Neon 心跳；Mem0 oss；memlg→冷备
+P0.5c R2 projects/ 目录约定 + series_id 写入技能
+P1    kind=npc curl（工具代码）
+P1c   本机桥：render_video / edit_compile / publish 三消费者
+P2    短图：拆集→分镜→质检；Mem0 复盘字段
+```
+
+验收加内容项：
+
+- 杀主恢复后 **同一角色 ref 路径仍在**  
+- 新集能 Mem0 搜到「勿改女主发型」  
+- 一夜无对话 Neon CU 不横线拉满  
+- 故意双开备机无法覆盖 `projects/` 主 MANIFEST  
+
+---
+
+## 10. 一句话合同
+
+> **内容向 Nexus = 一个会睡觉的云脑（记系列、派渲染、管验收）+ 一份 R2 资产与成片真相 + 一份 Neon 语义与队列 + 本机/外 API 当片场。**  
+> 三件套仍是 **Hermes 进程内的库**，不是三个视频工厂。  
+> 画质在外模，**连续剧在记忆与资产锁**；永续在 **R2 CAS + Neon 即用即连 + 单热租约**，不在 keep-alive 与多 Space 分脑。
+
+先把 **P0 flush** 做实，再挂 **render/publish 本机桥**——否则短剧产线只是更快地生产失忆。
+
+
+
+**结论先说：对你现在的 Nexus（内容云脑 + 免费 HF + 一热三件套），默认没有必要再引入 LangGraph 当平级组件。**  
+Hermes 已自带足够强的编排；LangGraph 只在少数「硬状态机」场景值得加，且应是**库内可选**，不是第二 Space。
+
+---
+
+## 1. Hermes 里已有的「类 LangGraph」能力
+
+| 能力 | Hermes 原生 | 说明 |
+|------|-------------|------|
+| 多步工具循环 | Agent loop | 规划→工具→观察→再规划 |
+| 并行拆活 | `delegate_task` / 批处理 | 子 Agent 隔离上下文，只回摘要 |
+| 异步不堵聊天 | async delegation | 派完拿 `task_id`，父会话可继续 |
+| 编排者嵌套 | `role=orchestrator` + `max_spawn_depth` | 可选多层，默认扁平防失控 |
+| 看板式多 Agent | Kanban（多版本已有） | 认领任务、依赖、并行、可持久 |
+| 学习闭环 | Skills + MEMORY/USER | 跑完沉淀技能，比手写图节点更贴「个人云脑」 |
+| 目标推进 | `/goal`、验证契约等 | 长任务持续推进 |
+| 动态工作流 | execute_code + delegate 分层 | 确定性循环用代码，判断用子 Agent |
+
+业界对比也常写成：**Hermes = 带记忆/技能的个人 Agent 运行时；LangGraph = 显式有向图状态机框架**——定位不同，不是缺谁谁就废。
+
+---
+
+## 2. LangGraph 仍强在哪里（Hermes 不替代的）
+
+| LangGraph | Hermes 较弱/不强调 |
+|-----------|---------------------|
+| 节点/边/条件分支**写死在代码里** | 流程多在模型+工具里「悟」 |
+| **Checkpointer** 断点续跑、time-travel | 靠 session/技能/队列，不是图版本库 |
+| 与 LangChain 生态、可观测、企业图规范 | 个人 Agent 优先 |
+| 强制 `retrieve→plan→act→reflect` 每步可测 | 可靠 skill/约定，但不如图硬 |
+
+若你要的是「监管级固定 SOP、每步可回放」，LangGraph 有价值；若要的是「IM 里指挥短剧/编码/派 NPC」，**Hermes 更合适**。
+
+---
+
+## 3. 对 Nexus 的架构裁决
+
+**之前「Hermes + LangGraph + Mem0」三件套 → 收成：**
+
+```text
+Hermes（唯一编排入口）
+  ├─ 原生：delegate / Kanban / skills / goal
+  ├─ Mem0 OSS（记忆库，不是第二脑）
+  └─ 重活 → task_queue（npc / render / publish…）
+
+LangGraph：默认不引入
+  仅当：某条产线必须代码级状态机 + Neon checkpointer
+  且：同进程 import，禁止独立 Space / call_space 硬依赖
+```
+
+| 场景 | 用什么 |
+|------|--------|
+| 聊天、系列决策、写记忆、派 NPC/渲染 | **只 Hermes** |
+| 拆集→分镜→质检清单（灵活） | Hermes + skill，或 `delegate_task` |
+| 固定 6 节点、要断点续跑审计 | 可考虑 **薄 LangGraph 库** |
+| 你现役 memlg 上的瘦图 | 可逐步 **迁回 Hermes skill/短流程**，减一层 |
+
+这样更贴你已拍的：**少服务、一 Space、省 CU、不抢身份**。
+
+---
+
+## 4. 和「内容云脑」的关系
+
+短剧/视频产线要的是：
+
+- **资产锁 + 异步队列 + 人终审**  
+- 不是企业级图引擎  
+
+用 Hermes：`技能写 SOP` + `task_queue 出队渲染` + `Mem0 记人设禁忌` 就够。  
+再挂 LangGraph 往往多一份 checkpointer 盘、多一种故障，**收益不大**。
+
+---
+
+## 5. 直接回答
+
+| 问题 | 答案 |
+|------|------|
+| Hermes 有没有类似 LangGraph 的功能？ | **有**：委派、并行/异步子 Agent、Kanban、编排角色、技能闭环——覆盖大部分编排需求 |
+| 还有没有必要引入 LangGraph？ | **默认没有**；只有强需求「代码定义图 + 持久 checkpoint/回放」时再同进程薄用 |
+| 对现役 Nexus？ | **Mem0 留、LangGraph 可降级为可选库或移除**；主路径 = Hermes 原生编排 + `task_queue` |
+
+**一句话：** 把 LangGraph 从「三件套平级」拿掉，Nexus 更干净，也更符合 Hermes 官方能力边界；需要时再加，不默认加。
+
+
+
+**结论：LangGraph 做备选后，最配「最强云上智脑」的不是再找一个编排框架，而是补齐 Hermes 弱、内容产线又刚需的四块——技能闭环、异步执行面、资产真相、可观测复盘。**
+
+Hermes 已覆盖「想 / 记 / 派子任务」；缺的是 **稳定 SOP、重活出舱、成片与角色不丢、知道自己有没有越做越差**。
+
+---
+
+## 1. 新「三件套」心智（LangGraph 降级后）
+
+| 层 | 组件 | 职责 |
+|----|------|------|
+| **脑** | **Hermes** | 对话、决策、委派、原生多 Agent |
+| **记** | **Mem0 OSS（+ 热文件）** | 语义事实；L0 人设；L2 会话 |
+| **行** | **Skills + task_queue + 外执行器** | 可复用流程 + 异步片场 |
+
+LangGraph：仅「必须代码级状态机 / 断点审计」时同进程薄用。
+
+社区与 Hermes 文档一致：**事实 ≠ 流程 ≠ 情节**——Skills 才是「流程记忆」，往往比再挂一张图更贴日常。
+
+---
+
+## 2. 最该补的四块（按性价比）
+
+### ① Skills 体系（第一优先，几乎零基建）
+
+**补什么：** 把短剧/自媒体/运维 SOP 写成 `SKILL.md`（agentskills 规范），靠学习环自动沉淀、按需加载。
+
+| 日常 | 示例 skill |
+|------|------------|
+| 短剧 | `series-bible`、`episode-script`、`asset-lock`、`storyboard-json`、`qc-consistency` |
+| 视频 | `prompt-i2v`、`render-dispatch`、`edit-checklist` |
+| 自媒体 | `publish-checklist`、`hook-library` |
+| 平台 | `nexus-npc-dispatch`、`persist-discipline` |
+
+**为何配得上「最强」：**  
+编排框架解决「怎么走节点」；Skills 解决「**你的片场下次少翻车**」。这是 Hermes 相对纯 LangGraph 栈的真正护城河。
+
+---
+
+### ② 异步执行面：`task_queue` + 本机/API 片场（第二优先）
+
+云脑 **不** 在 HF 里渲染。
+
+```text
+Hermes 入队 kind=render_video|edit_compile|publish|npc|…
+     → 本机桥 / 外 API（可灵、Seedance、Kling、ffmpeg…）
+     → output 回写 → Hermes 验收话术
+```
+
+| 补强点 | 作用 |
+|--------|------|
+| 标准化 `kind` + `input` | 和内容产线一一对应 |
+| 本机唯一常驻 poll | 不烧 Neon CU |
+| CNB NPC | 只写脚本/工具，不替代 I2V |
+
+**没有这一层，智脑只会聊天，成不了「制片云脑」。**
+
+---
+
+### ③ 资产真相仓（内容向第三优先）
+
+在已有 **R2 永续** 上固定 **项目资产树**（不是又一个向量库）：
+
+```text
+R2 projects/<series_id>/
+  bible/  assets/char|scene|voice/  storyboard/  deliverables/
+```
+
+| 记在 Mem0 | 放在 R2 |
+|-----------|---------|
+| 「女主发型锁定 v3」「禁改名」 | 参考图、音色、成片、分镜 JSON |
+
+一致性靠 **ref 文件 + 记忆约束**，不靠多开编排服务。  
+这是 2026 短剧工业化反复强调的：**角色锁 > 单镜画质**。
+
+---
+
+### ④ 轻量复盘 / 可观测（第四优先，别上重平台）
+
+生产 Agent 栈里 **eval 仍是普遍短板**；你不必上全套 LangSmith。
+
+最小够用：
+
+| 机制 | 做法 |
+|------|------|
+| 会话结束 | 已有 Mem0 / session_end：抽「翻车原因、有效钩子」 |
+| 任务回写 | `task_queue.output` 含模型、耗时、是否重抽 |
+| 技能自愈 | 成功轨迹 → `skill_manage` 补丁 |
+| 可选 | 关键 skill 加「验收清单」节点（人点头才 publish） |
+
+重型：Langfuse 等 **本机/有余力再加**，不进免费 HF 热路径。
+
+---
+
+## 3. 刻意不补什么
+
+| 候选 | 为何不作为「第四件套」 |
+|------|------------------------|
+| 第二个编排框架（Crew/AutoGen…） | 与 Hermes 委派/Kanban 重叠，身份分叉 |
+| 独立 Mem0 HTTP / Qdrant | 已否决；OSS 进进程即可 |
+| 云上 Comfy / 本地大模型 | 16GB 与 ToS 不合适 |
+| Honcho/Hindsight 等第二记忆 | 仅当 Mem0 不够用再试；默认 Mem0+原生足够 |
+| 15s 库心跳、多 Space 分脑 | 与永续合同冲突 |
+
+模型路由 **OmniRoute** 你已有，保留为 **推理网关**，不是「智脑第四极」。
+
+---
+
+## 4. 日常（含 AI 视频自媒体）目标态
+
+```text
+你 ──IM──► Hermes（脑）
+              ├─ L0/L1 人设与系列事实（Mem0 + md）
+              ├─ Skills（怎么拍、怎么发、怎么质检）
+              ├─ delegate / Kanban（平行调研、多集大纲）
+              └─ task_queue ──► 本机片场 / 外 API / NPC
+                                    │
+                                    ▼
+                              R2 资产与成片
+                                    │
+                              回写 → 验收 → Mem0/Skill 变强
+```
+
+**「最强」定义：**  
+跨周仍认得系列与你的习惯、越做越少重复劳动、能派真实产能、杀容器丢盘仍能从 R2+Neon 复活——而不是图节点最多。
+
+---
+
+## 5. 一句话
+
+> **LangGraph 备选后，配得上最强云上智脑的补充是：Skills（流程智商）+ task_queue 外置片场（真干活）+ R2 系列资产锁（真一致）+ 轻复盘（真变强）；Mem0 继续只做语义记性。**
+
+落地顺序仍建议：  
+**P0 永续 flush → Skills/内容包与 `projects/` 约定 → 本机 render/publish 桥 → 再考虑薄 LangGraph。**
+
+
+
+**有意义，但是「有条件的库」，不是默认三件套。**
+
+---
+
+## 简短结论
+
+| 问法 | 答案 |
+|------|------|
+| 还要不要当平级服务 / 独立 Space？ | **不要** |
+| 作为 Python 库、同进程按需用，还有没有价值？ | **有，但只覆盖一小类问题** |
+| 日常聊天、短剧派活、记人设、Skills？ | **用 Hermes 就够，不必上图** |
+
+---
+
+## 它仍然强在哪里（Hermes 替代不干净的）
+
+1. **流程写在代码里**  
+   边、条件、重试次数、强制 `reflect` 节点——不依赖模型「自觉」。适合监管、固定 SOP、要可测的流水线。
+
+2. **Checkpointer / 断点**  
+   图跑到一半挂了，可从 checkpoint 续；可 time-travel。Hermes 靠 session/队列，不是同一套「图状态版本库」。
+
+3. **和测试、观测对接**  
+   节点级断言、回放、和 Lang 生态工具链更顺（若你以后要严肃 eval）。
+
+4. **复杂分支**  
+   例如：质检失败 → 只重跑「渲染」子图，而不是整段对话重来。
+
+这些是 **库级** 价值，不是再造一个云脑。
+
+---
+
+## 在你这套 Nexus 里怎么摆
+
+```text
+默认路径：Hermes + Mem0 + Skills + task_queue
+备选路径：from langgraph ... 写 1～2 条「硬 SOP」图
+         同进程调用，thread_id = 任务 id
+         checkpointer 用 Neon DIRECT（用完即关）
+禁止：独立 Space、call_space 硬依赖、每句对话都走图
+```
+
+**值得写成图的例子（内容向）：**
+
+- 固定：`锁资产 → 分镜 JSON 校验 → 入队 render → 回写 → 质检清单`（结构校验失败不准入队）  
+- 固定：发布前检查表（封面/字幕/敏感词）全过才 `publish`
+
+**不必写成图的例子：**
+
+- 闲聊、改一集大纲、问「女主设定」  
+- 单次 `delegate_task` / 调一个 skill  
+- 已靠 Skills + 队列能说清的流程
+
+---
+
+## 和「最强云脑」的关系
+
+- **智脑的主体**仍是 Hermes（记忆、技能、委派、永续）。  
+- **LangGraph 库** = 少数「必须机械执行」的产线夹具。  
+- 没有它，云脑依然成立；有它，只是在关键产线上更可控，**不是升级成另一个大脑**。
+
+**一句话：**  
+LangGraph **作为库仍有意义**——用在「代码级状态机 + 断点」；**作为架构支柱没意义**——不要再把它和 Hermes、Mem0 并列成日常三件套。
