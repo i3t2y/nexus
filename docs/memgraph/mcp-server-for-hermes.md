@@ -1,3 +1,5 @@
+> [ARCHIVED 2026-09-05] 本文档记载的自托管 mem0 server / MCP server 方案已废弃，仅作冷备恢复参考。现行方案见 docs/shared/cron-memory-evolution.md。
+
 # Exposing a Worker as an MCP Tool to Hermes
 
 When deploying a LangGraph worker (or any custom service) that should be callable by Hermes as a tool, use a **stdio MCP server**. This lets the LLM autonomously decide when to invoke the worker for multi-step tasks.

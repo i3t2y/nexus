@@ -1,6 +1,7 @@
 # 语法/类型闸门:挡低级语法错误进 HF Space。
-# 批1 搬仓(34f057d)后真位对齐:hermes/{app,scripts,libs} + memgraph + workers/gateway。
+# 批1 搬仓(34f057d)后真位对齐:hermes/{app,scripts,libs} + workers/gateway。
 # sync-spaces.sh(根 libs ↔ 三 Space build context 一致性)留 old/scripts/ 待三 Space(langgraph/claude-code/codex)重建,当前 skip。
+# 2026-09-05: memgraph 废弃, 整体移入 old/memgraph-20260905/(含其 deploy workflow), 本闸门不再引用。
 name: sync-check
 
 on:
@@ -9,7 +10,6 @@ on:
       - "hermes/app/**"
       - "hermes/scripts/**"
       - "hermes/libs/**"
-      - "memgraph/**"
       - "workers/gateway/**"
       - "scripts/sync-logic-bucket.sh"
       - "docker/**"
@@ -19,7 +19,6 @@ on:
       - "hermes/app/**"
       - "hermes/scripts/**"
       - "hermes/libs/**"
-      - "memgraph/**"
       - "workers/gateway/**"
       - "docker/**"
 
@@ -43,8 +42,8 @@ jobs:
         run: |
           set -e
           fail=0
-          # hermes 逻辑层(进 Bucket 不走 git 副本,直接编 git 真源)+ memgraph worker
-          for f in $(find hermes/app hermes/scripts hermes/libs memgraph/bucket memgraph/scripts \
+          # hermes 逻辑层(进 Bucket 不走 git 副本,直接编 git 真源)
+          for f in $(find hermes/app hermes/scripts hermes/libs \
                      -name "*.py" -not -path "*/__pycache__/*" 2>/dev/null); do
             python3 -m py_compile "$f" || fail=1
           done

@@ -1,3 +1,5 @@
+> [ARCHIVED 2026-09-05] 本文档记载的自托管 mem0 server / MCP server 方案已废弃，仅作冷备恢复参考。现行方案见 docs/shared/cron-memory-evolution.md。
+
 # mem0 Server Native Auth Mechanism
 
 mem0 server (`server/auth.py`) has a built-in 4-branch auth chain in `verify_auth()`. Understanding it is critical for securing a public Space without middleware or source changes.

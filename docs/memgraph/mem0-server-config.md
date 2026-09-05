@@ -1,3 +1,5 @@
+> [ARCHIVED 2026-09-05] 本文档记载的自托管 mem0 server / MCP server 方案已废弃，仅作冷备恢复参考。现行方案见 docs/shared/cron-memory-evolution.md。
+
 
 
 ## Final Verification (2026-08-16)
