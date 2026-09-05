@@ -328,6 +328,19 @@ on_shutdown() {
   exit 0
 }
 
+# ── 镜像外补装(单一事实源在 helper-pkgs.sh,★2026-09-04 用户拍板独立成文件) ──
+# 只跑一次(在 while 重启 loop 前), 幂等(已装跳过 → 镜像预装后零开销)。失败仅 WARN 不阻断。
+# 多条补装积累在 $APP_DIR/scripts/helper-pkgs.sh 的 EXTRA_PKGS 清单, 未来可并进镜像重建
+# (Dockerfile COPY + RUN source 同一文件), 双路同源不漂移。helper 缺失(FORCE 复用/旧桶)则跳过。
+if [ -f "$APP_DIR/scripts/helper-pkgs.sh" ]; then
+  # shellcheck disable=SC1090
+  # shellcheck source=/dev/null
+  . "$APP_DIR/scripts/helper-pkgs.sh" \
+    && install_extra_pkgs \
+    && true \
+    || echo "[real-start] WARN: helper-pkgs install had failures (non-fatal, boot continues)"
+fi
+
 while true; do
   echo "[real-start] launching hermes boot (gateway + dashboard :7860) app-dir=$APP_DIR"
   python -c "import sys; sys.path.insert(0,'$APP_DIR'); from app.main import boot; boot()" &
