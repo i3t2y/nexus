@@ -1,7 +1,7 @@
 # 凭证清单
 
-> 模板阶段：凭证占位，未真填。就位后填入各 Space Secrets（HF）与 Worker Secrets（Cloudflare）。
-> **绝不**把真凭证提交进 git。`.env.example` 是模板，`.env` 已在 `.gitignore`。
+> 凭证真值在各 HF Space Secrets 与 Cloudflare Worker Secrets 中；本文件只记录凭证名称、来源与用途。
+> **绝不**把真凭证提交进 git。
 
 ## 命名约定
 
