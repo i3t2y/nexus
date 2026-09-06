@@ -64,22 +64,11 @@ mkdir -p "${HERMES_HOME}/home" 2>/dev/null || echo "[real-start] WARN: mkdir ${H
 #   HERMES_HOME 与 OS HOME(=/home/user)刻意分离(L859-861:HERMES_HOME scopes state,HOME 为 OS user)。
 # mkdir 此目录保子进程 HOME 落地有路径。
 
-# nexus plugin 从 Bucket 逻辑层拷到 HERMES_HOME/plugins(K1 决策-3 插件目录)
-#   - nexus-r2: R2 文件 CRUD dashboard tab (+ 原三下游 bridge tool 已随收口取消)
-#   - nexus-ops: 2026-08-22 删。探活下游三 Space(已取消) + 只读查废弃 Supabase 四表 → 归 old/
-# hermes 用户插件目录 = $HERMES_HOME/plugins(hermes_cli/plugins.py 扫此 + web_server dashboard discovery 扫此)
-# ★2026-08-09 方案 C:plugin source 在 $APP_DIR/scripts/plugins/(Bucket 挂载后才有)。
-for pname in nexus-r2; do
-  if [ -d "$APP_DIR/scripts/plugins/$pname" ]; then
-    rm -rf "$HERMES_HOME/plugins/$pname" 2>/dev/null
-    cp -r "$APP_DIR/scripts/plugins/$pname" "$HERMES_HOME/plugins/" \
-      && echo "[real-start] $pname plugin staged → $HERMES_HOME/plugins/$pname" \
-      || echo "[real-start] WARN: stage $pname plugin failed"
-  else
-    echo "[real-start] WARN: $pname plugin source missing at $APP_DIR/scripts/plugins/$pname"
-  fi
-done
-# 清 pycache(避免旧版名 nexus 残留字节码)
+# nexus plugin 直读 Bucket(★2026-09-06 symlink 化后 stage 循环退役):
+#   /opt/data/.hermes/plugins 是指向 /data/.hermes/plugins 的 symlink,Bucket 挂载即真源,
+#   hermes_cli/plugins.py + dashboard 扫 $HERMES_HOME/plugins 直读 Bucket 内容。
+#   2026-09-05 前用 cp -r stage(Bucket→HERMES_HOME本地副本)已随 symlink 方案作废。
+# pycache 在 Bucket symlink 下,FUSE 上 find+rm 代价小,保留顺路清。
 find "$HERMES_HOME/plugins" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # ── hermes home 关键文件持久层(★2026-08-07 全面持久补全,Bucket 路) ──
