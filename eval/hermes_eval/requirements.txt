@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+requests>=2.31
+# 真实后端（HERMES_EVAL_BACKEND=real）才需要：
+# psycopg2-binary>=2.9      # 只读 Neon pgvector 快照
+# python-dotenv>=1.0

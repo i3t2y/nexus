@@ -1,0 +1,9 @@
+{
+  "case_id": "easy-01",
+  "memory_hits": ["n-omn 生产入口 omn.360710.xyz/v1 (PSK 鉴权)"],
+  "refused": false,
+  "dispatch": null,
+  "turns": 2,
+  "answer": "n-omn 的生产入口是 https://omn.360710.xyz/v1，使用 PSK 鉴权。",
+  "actions": ["memory.search"]
+}
