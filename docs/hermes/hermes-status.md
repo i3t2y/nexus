@@ -33,6 +33,19 @@ Cloudflare R2 (灾备快照副路, 2026-08-18 恢复)
   └── supabase-snapshot/{四表}.json + _manifest.json (persist_to_r2.py 读 Neon 1800s)
 ```
 
+## 探活/保活 (2026-09-06 核定)
+| 位置 | 端点 | 鉴权 | 用途 |
+|---|---|---|---|
+| HF Space 网关 | `https://sonoke-nexus.hf.space/` `/health` | HF 登录墙 302 | 私有 Space 前端门, 不做探活(302 会误报) |
+| hermes api_server | `https://sonoke-nexus.hf.space/api/health` | 无 | **探活正确端点**: 200 = 容器+app 活 |
+
+- **探活配置 (cron-job.org 推荐)**:
+  - URL: `https://sonoke-nexus.hf.space/api/health`
+  - 频次: 4min (与 n-omn 对齐)
+  - 成功码: 200
+  - 现有 Space 若 HF 网关 302 判定也活, 但 `/api/health` 200 才是应用层活
+  - n-omn 稳定探活同款配置, 非 hermes-native
+
 ## Supabase → Neon 迁移 (2026-08-17) + R2 副路恢复 (2026-08-18)
 ### 已完成
 - ✅ mem0.json mode: oss → self_hosted (本地改, 重启后 MEM0_HOST 接管)

@@ -1,7 +1,7 @@
 """Keep-alive 辅助（借鉴 HuggingMes cloudflare-keepalive-setup.py）。
 
 两类用途：
-1. 自身被外部监测网站定期 ping /health（主要保活手段，已确认稳定）。
+1. 自身被外部监测网站定期 ping /api/health（主要保活手段，已确认稳定）。
 2. 本脚本周期性调下游 Space 的 /health 唤醒它们（防下游休眠），
    间隔随机化避免固定周期特征明显。
 
