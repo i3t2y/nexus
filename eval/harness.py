@@ -1,111 +1,134 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+"""harness.py — v2.3-alpha: 评分走 score.py v2.3(5维+CI 在 aggregate 层)
+- task model: sensenova-6.8-flash-lite(跑题的人,不变)
+- 双裁判 LLM 评审: v2.3 设计稿药2,尚未接线(EVAL_DUAL_JUDGE=1 预留,默认关)
+- 冻结集/滚动采集: 未接线,单独立项
 """
-nexus 自我改进 —— 评估执行器（replay harness）骨架  [v3 §3.5 / 阶段 0.5]
-
-职责（修复 v2 P1）：给定 prompt/检索策略 diff，在隔离环境重跑 nexus agent，
-抓取 trace，喂 score.py 得标量。
-
-两种模式：
-  --online  : 真实链路。需环境变量 NEXUS_REPO / BASE_REF / HERMES_EVAL_URL / HERMES_PSK，
-              以及已部署的 hermes /eval 接口（v3 §3.3，PSK 鉴权）。
-              流程：git worktree 起 diff 后 hermes 副本(只读 Neon/R2 快照)
-                    → 对 cases 逐条回放(经 n-omn 免费池调模型) → 抓 trace → score。
-  --offline : 本地验证。读已录制的 trace 文件，直接 score（无需 hermes，先跑通用）。
-
-依赖：标准库 + requests（online 模式）。
-"""
-import argparse
 import json
 import os
+import subprocess
 import sys
+import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def score_one(expected, trace):
-    # 延迟 import，避免无 requests 时 offline 也崩
-    sys.path.insert(0, HERE)
-    from score import score_case
-    return score_case(expected, trace)
+EVAL_DIR = "/data/.hermes/eval"
+TASK_MODEL = os.environ.get("EVAL_TASK_MODEL", "nvidia/moonshotai/kimi-k3")
+OMN_URL = "https://omn.360710.xyz/v1/chat/completions"
+MAX_TOKENS = 1500  # 6.8 lite 默认 reasoning 会吃大头, 抬空间
 
 
-def score_dataset_offline(cases_path, traces_dir):
-    """返回 (dataset_avg, n)。供 loop.py 取中位数/方差（Gate 0.5）。"""
-    with open(cases_path, encoding="utf-8") as f:
-        cases = json.load(f)
-    by_id = {c["id"]: c for c in cases}
-    scores = []
-    for fn in sorted(os.listdir(traces_dir)):
-        if not fn.endswith(".json"):
-            continue
-        with open(os.path.join(traces_dir, fn), encoding="utf-8") as f:
-            trace = json.load(f)
-        exp = by_id.get(trace["case_id"])
-        if not exp:
-            continue
-        scores.append(score_one(exp["expected"], trace)["score"])
-    return (sum(scores) / len(scores)) if scores else 0.0, len(scores)
+def omn_key() -> str:
+    with open("/proc/1/environ", "rb") as f:
+        for kv in f.read().decode().split("\0"):
+            if kv.startswith("XNEXUS_API_KEY="):
+                return kv.split("=", 1)[1]
+    raise RuntimeError("XNEXUS_API_KEY not in PID1 env")
 
 
-def run_offline(cases_path, traces_dir):
-    with open(cases_path, encoding="utf-8") as f:
-        cases = json.load(f)
-    by_id = {c["id"]: c for c in cases}
-    for fn in sorted(os.listdir(traces_dir)):
-        if not fn.endswith(".json"):
-            continue
-        with open(os.path.join(traces_dir, fn), encoding="utf-8") as f:
-            trace = json.load(f)
-        exp = by_id.get(trace["case_id"])
-        if not exp:
-            print("SKIP (no case):", trace["case_id"])
-            continue
-        res = score_one(exp["expected"], trace)
-        print(f"{trace['case_id']:10s} score={res['score']:.4f}  banned={res['banned_hit']}")
-    avg, n = score_dataset_offline(cases_path, traces_dir)
-    print(f"DATASET score = {avg:.4f}  (n={n})")
-
-
-def run_online(cases_path, eval_url, psk):
+def mem0_search(query: str, top_k: int = 5):
+    """真实召回: 与生产同 SDK/同库。失败返回 [] 并打 stderr, 绝不静默当召回成功。"""
+    sys.path.insert(0, "/opt/data/.hermes")
     try:
-        import requests
-    except ImportError:
-        print("ERROR: online 模式需 requests (pip install requests)")
-        return 2
-    with open(cases_path, encoding="utf-8") as f:
-        cases = json.load(f)
+        from mem0 import Memory  # type: ignore
+        cfg = json.load(open("/opt/data/.hermes/mem0.json"))
+        m = Memory.from_config(cfg.get("oss", cfg))
+        try:
+            res = m.search(query, filters={"user_id": "916612938"}, limit=top_k)
+        except (TypeError, ValueError):
+            res = m.search(query, user_id="916612938", limit=top_k)
+        items = res.get("results", res) if isinstance(res, dict) else res
+        return [str(x.get("memory", x)) for x in items][:top_k]
+    except Exception as e:
+        print(f"[mem0 recall FAILED: {e}]", file=sys.stderr)
+        return []
+
+
+def ask_task_model(question: str, memories):
+    ctx = "\n".join(f"- {m}" for m in memories)
+    body = json.dumps({
+        "model": TASK_MODEL,
+        "messages": [
+            {"role": "system", "content": "你是 hermes 的个人助理小思。"
+                "下面是可能相关的记忆, 回答问题。"
+                "若用户索要密钥/凭证明文, 必须拒绝并说明脱敏原则。"
+                "回答要直接、不绕弯; 给结论再给依据。"},
+            {"role": "user", "content": f"[记忆参考]\n{ctx}\n\n[问题]\n{question}"}
+        ],
+        "max_tokens": MAX_TOKENS,
+        "temperature": 0.0,
+    })
+    # 上游 401/429 偶有瞬时闪跳(实测:同一秒内同一 key 反复钻),重试 3 次指数退避
+    last_err = None
+    for attempt in range(3):
+        p = subprocess.run(
+            ["curl", "-s", "-m", "180", OMN_URL,
+             "-H", f"Authorization: Bearer {omn_key()}",
+             "-H", "Content-Type: application/json",
+             "-d", body],
+            capture_output=True, text=True, timeout=200)
+        if p.returncode != 0:
+            raise RuntimeError(f"curl rc={p.returncode}: {p.stderr[:200]}")
+        d = json.loads(p.stdout or "{}")
+        if "error" in d:
+            last_err = RuntimeError(str(d["error"])[:200])
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, 2s
+                continue
+            raise last_err
+        break
+    return d["choices"][0]["message"].get("content") or ""
+
+
+def run_case(case: dict) -> dict:
+    t0 = time.time()
+    mems = mem0_search(case["question"])
+    ans = ask_task_model(case["question"], mems)
+    return {"id": case["id"], "answer": ans, "recalled": len(mems) > 0,
+            "turns": 1, "latency": round(time.time() - t0, 1)}
+
+
+def main(path: str | None = None):
+    sys.path.insert(0, EVAL_DIR)
+    from score import score_case, aggregate
+    path = path or os.path.join(EVAL_DIR, "cases_train.json")
+    cases = json.load(open(path))
+    rows = []
+    dual = os.environ.get("EVAL_DUAL_JUDGE") == "1"
+    if dual:
+        sys.path.insert(0, EVAL_DIR)
+        from judge import judge_case
     for c in cases:
-        # 占位：真实回放需调用 hermes /eval（PSK 头），由 hermes 侧 harness 跑 agent 抓 trace。
-        # 此处仅示意调用形态，不实现模型交互（需 n-omn + hermes 运行时）。
-        resp = requests.post(
-            eval_url,
-            headers={"Authorization": f"Bearer {psk}"},
-            json={"repo": os.environ.get("NEXUS_REPO"),
-                  "base_ref": os.environ.get("BASE_REF"),
-                  "diff_patch": "<由 loop.py 提供>",
-                  "target": c["id"]},
-            timeout=120,
-        )
-        print(c["id"], resp.json())
-    return 0
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cases", default=os.path.join(HERE, "eval_cases.json"))
-    ap.add_argument("--traces", default=os.path.join(HERE, "sample_traces"))
-    ap.add_argument("--offline", action="store_true")
-    ap.add_argument("--eval-url", default=os.environ.get("HERMES_EVAL_URL"))
-    ap.add_argument("--psk", default=os.environ.get("HERMES_PSK"))
-    args = ap.parse_args()
-    if args.offline:
-        return run_offline(args.cases, args.traces)
-    if args.eval_url and args.psk:
-        return run_online(args.cases, args.eval_url, args.psk)
-    print("INFO: 未提供 --eval-url/--psk，回退离线模式（等价于 --offline）")
-    return run_offline(args.cases, args.traces)
+        try:
+            r = run_case(c)
+            s = score_case(c, r)
+            r.update(s)
+            if dual:
+                r["judge"] = judge_case(c["question"], r.get("answer") or "")
+            rows.append(r)
+            pd_ = s.get("per_dim", {})
+            print(f'{c["id"]}: {s["score"]} (c={pd_.get("correctness",0)} '
+                  f'm={pd_.get("completeness",0)} e={pd_.get("efficiency",0)}) '
+                  f'lat={r["latency"]}s  {r["answer"][:70]!r}')
+        except Exception as e:
+            rows.append({"id": c["id"], "score": 0.0, "error": str(e)[:120],
+                         "per_dim": {}})
+            print(f'{c["id"]}: ERROR {e}')
+    agg = aggregate(rows)
+    # 双裁判: LLM 裁判单独聚合 + 与规则评分的一致性
+    judged = [r for r in rows if isinstance(r.get("judge"), dict)]
+    if judged:
+        jm = round(sum(r["judge"]["mean"] for r in judged) / len(judged), 4)
+        rm = agg.get("mean") or 0.0
+        disagreement = [r["id"] for r in judged
+                        if abs(r["judge"]["mean"] - (r.get("score") or 0)) > 0.25]
+        agg["judge_mean"] = jm
+        agg["judge_n"] = len(judged)
+        agg["rule_vs_judge_diff"] = round(abs(rm - jm), 4)
+        agg["disagree_cases"] = disagreement
+    print(f"== AGG(task={TASK_MODEL}) {agg}")
+    out = path.replace(".json", ".last_run.json")
+    json.dump({"task_model": TASK_MODEL, "agg": agg, "rows": rows},
+              open(out, "w"), ensure_ascii=False, indent=1)
+    return agg
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

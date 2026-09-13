@@ -1,0 +1,4 @@
+[{"id":"X1","question":"hermes 的 Bot Mode 跟 Grok Bot 比大概什么水平？","must_contain":["60","70"],"topic":"botmode对比"},
+ {"id":"X2","question":"boot 快照 b1f1836 是干什么用的？解决什么问题？","must_contain":["SQLITE_CORRUPT"],"topic":"boot快照"},
+ {"id":"X3","question":"n-omn 的 bucket 清理后从多少降到多少？","must_contain":["17","1.6"],"topic":"bucket大清理"},
+ {"id":"X4","question":"CNB NPC 的免费模型是哪个？免费到什么时候？","must_contain":["deepseek-v4-flash","2026-12-31"],"topic":"cnb免费窗口"}]

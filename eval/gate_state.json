@@ -1,0 +1,94 @@
+{
+ "baseline": {
+  "train": 0.87,
+  "heldout": 0.89,
+  "ci": {
+   "train": [
+    0.804,
+    0.924
+   ],
+   "heldout": [
+    0.79,
+    0.94
+   ]
+  },
+  "n_train": 10,
+  "n_heldout": 4,
+  "scorer": "v2.3-5dim",
+  "updated": "2026-09-08"
+ },
+ "processed": {
+  "nexus.zen/npc-lab#16": "2026-09-08T02:18:43Z",
+  "nexus.zen/nexus#11": "2026-09-08T04:25:10Z",
+  "nexus.zen/npc-lab#18": "2026-09-08T07:33:43Z",
+  "nexus.zen/nexus#15": "2026-09-08T08:33:15Z",
+  "nexus.zen/nexus#17": "2026-09-08T09:02:33Z",
+  "nexus.zen/npc-lab#20": "2026-09-08T09:17:17Z",
+  "nexus.zen/npc-lab#22": "2026-09-08T11:45:01Z",
+  "nexus.zen/npc-lab#24": "2026-09-08T12:13:28Z",
+  "nexus.zen/nexus#30": "2026-09-09T00:05:24Z",
+  "nexus.zen/nexus#31": "2026-09-09T00:30:36Z",
+  "nexus.zen/nexus#33": "2026-09-09T01:18:37Z",
+  "nexus.zen/nexus#35": "2026-09-09T08:41:11Z",
+  "nexus.zen/nexus#37": "2026-09-10T00:41:36Z",
+  "nexus.zen/npc-lab#26": "2026-09-11T02:19:19Z",
+  "nexus.zen/omn#3": "2026-09-10T10:31:46Z",
+  "nexus.zen/omn#12": "2026-09-10T23:25:55Z",
+  "nexus.zen/omn#11": "2026-09-10T23:26:16Z",
+  "nexus.zen/omn#10": "2026-09-10T23:26:36Z",
+  "nexus.zen/omn#9": "2026-09-10T23:26:57Z",
+  "nexus.zen/omn#13": "2026-09-10T11:35:30Z",
+  "nexus.zen/nexus#39": "2026-09-10T23:17:32Z",
+  "nexus.zen/nexus#41": "2026-09-11T01:52:18Z",
+  "nexus.zen/omn#19": "2026-09-11T21:25:50Z",
+  "nexus.zen/omn#18": "2026-09-11T21:25:52Z",
+  "nexus.zen/nexus#45": "2026-09-13T05:36:49Z",
+  "nexus.zen/nexus#43": "2026-09-13T05:37:09Z",
+  "nexus.zen/omn#27": "2026-09-13T05:37:16Z",
+  "nexus.zen/omn#26": "2026-09-13T05:37:32Z",
+  "nexus.zen/omn#25": "2026-09-13T05:37:37Z",
+  "nexus.zen/omn#24": "2026-09-13T05:37:51Z"
+ },
+ "rework": {
+  "nexus.zen/nexus#31": true,
+  "nexus.zen/nexus#33": true,
+  "nexus.zen/nexus#35": true,
+  "nexus.zen/nexus#37": true,
+  "nexus.zen/npc-lab#26": true,
+  "nexus.zen/omn#12": true,
+  "nexus.zen/omn#11": true,
+  "nexus.zen/omn#10": true,
+  "nexus.zen/omn#9": true,
+  "nexus.zen/omn#13": true,
+  "nexus.zen/nexus#39": true,
+  "nexus.zen/nexus#41": true,
+  "nexus.zen/omn#19": true,
+  "nexus.zen/nexus#43": true,
+  "nexus.zen/omn#26": true,
+  "nexus.zen/omn#24": true,
+  "nexus.zen/nexus#45": true
+ },
+ "baseline_v22_archive": {
+  "train": 0.875,
+  "heldout": 0.875,
+  "n_train": 10,
+  "n_heldout": 4,
+  "updated": "2026-09-08"
+ },
+ "judge_stats": {
+  "ok": 48,
+  "fail": 0
+ },
+ "baseline_history": [
+  {
+   "ts": "2026-09-09T02:00Z",
+   "train": 0.876,
+   "heldout": null,
+   "ci_train": [
+    0.804,
+    0.938
+   ],
+   "note": "judge融合上线后rule重跑;与0.87一致,基线不换。E2=0.66是短板"
+  }
+ ]
+}
