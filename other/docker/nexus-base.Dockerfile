@@ -128,7 +128,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements-base.txt
 # pin tag 不 pin main(防 break;升级改 tag + rebuild)
 # clone 到 /opt/hermes-agent(系统级只读供 import,root 拥有,user 只读 import 即可)
 # editable --system 安装:egg-link 写进系统 site-packages 指向源码,任何 user 能 import run_agent
-ARG HERMES_AGENT_TAG=v2026.9.14
+ARG HERMES_AGENT_TAG=v2026.9.24
 RUN git clone --depth 1 --branch ${HERMES_AGENT_TAG} \
         https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
     && uv pip install --system --no-cache-dir -e /opt/hermes-agent --no-deps
